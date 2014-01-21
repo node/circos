@@ -1,0 +1,350 @@
+#!/bin/env perl
+
+=pod
+
+=head1 NAME
+
+                                    ____ _
+                                   / ___(_)_ __ ___ ___  ___
+                                  | |   | | '__/ __/ _ \/ __|
+                                  | |___| | | | (_| (_) \__ \
+                                   \____|_|_|  \___\___/|___/
+
+                                                round is good
+
+circos - generate circularly composited information graphics
+
+=head1 SYNOPSIS
+
+  circos -conf circos.conf [-silent] [-help] [-man]
+
+  # detailed debugging for code components
+  # see http://www.circos.ca/documentation/tutorials/configuration/debugging
+  circos -debug_group GROUP1,[GROUP2,...]
+
+  # configuration dump
+  circos -cdump [BLOCK1/[BLOCK2/...]]
+
+  # overriding configuration parameters
+  circos -param image/radius=2000p -param ideogram/show=no
+
+=head1 DESCRIPTION
+
+Circos is a software package for visualizing data and information. It
+visualizes data in a circular layout, which makes Circos ideal for
+exploring relationships between objects or positions. There are other
+reasons why a circular layout is advantageous, not the least being the
+fact that it is attractive.
+
+Circos is ideal for creating publication-quality infographics and
+illustrations with a high data-to-ink ratio, richly layered data and
+pleasant symmetries. You have fine control each element in the figure
+to tailor its focus points and detail to your audience.
+
+=head1 CONFIGURATION
+
+Settings are meant to be passed using a plain-text configuration
+file. This file can be created manually or by another script, which
+allows Circos to be fully automated.
+
+For full documentation, see
+
+  L<http://www.circos.ca/documentation/tutorials>
+
+=head2 Syntax
+
+Configuration is plain-text and composed of hierarchical blocks. Some
+blocks, such as C<<ideogram>> are mandatory, while others like
+C<<backgrounds>> are optional. 
+
+To get started, refer to the quick guide tutorial.
+
+  L<http://www.circos.ca/documentation/tutorials/quick_guide>
+
+A typical configuration file might look like this
+
+  # image size and format 
+  <image>
+   ...
+  </image>
+ 
+  # position and size of ideograms
+  <ideogram>
+   ...
+  </ideogram>
+
+  # position, type and format of data tracks
+  <plots>
+   <plot>
+     ...
+   </plot>
+   ...
+  </plots>
+
+  # colors, fonts and fill patterns
+  <<include etc/colors_fonts_patterns.conf>>
+
+  # system parameters
+  <<include etc/housekeeping.conf>>
+
+=head2 Modularity
+
+The C<<<include FILE>>> directive imports one configuration file into another. This facility helps to keep configuration files modular.
+
+Parameter definitions that do not frequently change, such as color and font definitions, are conventionally imported from files found in F<etc/> in the distribution.
+
+In the tutorials, you'll find that the C<<ideogram>> and C<<ticks>> blocks are imported into the main configuration file. Because these blocks can get quite large, the main configuration file is more legible if they are relegated to separate files.
+
+=head2 Overriding with *
+
+To override a parameter that has been included from a file, use the C<*> suffix. The suffix is required because multiple definitions of a parameter are not allowed, except in cases where a parameter is may have more than one value.
+
+  <image>
+  # included file defines 'radius'
+  <<include etc/image.conf>>
+  # this will override the radius value
+  radius* = 2500p
+  </image>
+
+The C<*> suffix can be repeated to specify which value takes precedence in a block.
+
+  radius = 1500p
+  radius* = 2500p
+  radius** = 3000p # this instance of radius will be used
+
+=head2 Overriding with Command Line
+
+Any configuration parameter in a unique block name can be specified on
+the command line using
+
+  -param PATH/PARAM=value
+
+For example,
+
+  # <ideogram>
+  #   show = no
+  #   ...
+  # </ideogram>
+  -param ideogram/show=no
+
+  # <ideogram>
+  #   <spacing>
+  #     default = 0.01r
+  #   </spacing>
+  #   ...
+  # </ideogram>
+  -param ideogram/spacing/default=0.01r
+
+Multiple parameters can be redefined, each with its own C<-param> flag
+
+  -param show_ticks=no -param image/radius=2000p
+
+=head2 Merging Blocks
+
+Multiple instances of the following blocks are automatically merged: C<<ideogram>>, C<<colors>>, C<<fonts>>, C<<paterns>>, C<<image>>, C<<links>>, C<<plots>> and C<<highlights>>.
+
+The purpose of this is to allow you to add to canonical definitions.
+
+  # this file defines default <colors>, <fonts> and <patterns>
+  <<include etc/colors_fonts_patterns.conf>>
+
+  # add to the colors block
+  <colors>
+  mycolor = 150,25,25
+  </colors>
+
+=head1 OPTIONS
+
+=head2 Configuration
+
+=over
+
+=item -configfile FILE
+
+Name of configuration file. This is required.
+
+Circos will attempt to guess the location of this file, searching for
+C<circos.conf> in C<.>, C<..>, and C<../..>.
+
+=back
+
+=head2 Output Format
+
+=over
+
+=item -png, -nopng
+
+=item -svg, -nosvg
+
+Toggles output of PNG and SVG files.
+
+=back
+
+=head2 Output Paths
+
+=over 
+
+=item -outputdir DIR
+
+=item -outputfile FILE
+
+Change the output directory and filename.
+
+=back 
+
+=head2 Debugging
+
+=over
+
+=item -debug LEVEL
+
+Turn on debugging output.
+
+=item -debug_group GROUP1,[GROUP2,...]
+
+Turn on debugging output for specific groups. For a list of groups, see
+
+  L<http://www.circos.ca/documentation/tutorials/configuration/debugging>
+
+=item -silent 
+
+Generate no reporting.
+
+=back
+
+=head2 Usage
+
+=over
+
+=item -version
+
+Show the version.
+
+=item -help
+
+Show brief usage synopsis.
+
+=item -man
+
+Show man page.
+
+=back
+
+=cut
+
+use strict;
+use warnings;
+use FindBin;
+use Getopt::Long;
+use Pod::Usage;
+
+use lib "$FindBin::RealBin";
+use lib "$FindBin::RealBin/../lib";
+use lib "$FindBin::RealBin/lib";
+use Circos;
+
+use Circos::Debug;
+
+my %OPT;
+GetOptions(\%OPT,
+					 'configfile=s',
+					 'param=s@',
+					 'cdump:s',
+					 'cdebug',
+
+					 'outputdir=s',
+					 'outputfile=s',
+					 'png!',
+					 'svg!',
+					 'imagemap',
+
+					 'color_cache_rebuild',
+					 'color_cache_static',
+					 'randomcolor:s',
+
+					 'help',
+					 'man',
+					 'silent',
+					 'paranoid!',
+					 'warnings!',
+					 'fakeerror=s',
+					 'debug+',
+					 'debug_group=s',
+					 'version',
+
+					 'show_ticks!',
+					 'show_tick_labels!',
+
+#	   'chromosomes=s',
+#	   'chromosomes_display_default!',
+#	   'chromosomes_order=s',
+#	   'chromosomes_scale=s',
+#	   'chromosomes_radius=s',
+#	   'usertext1=s',
+#	   'usertext2=s',
+#	   'usertext3=s',
+#	   'usertext4=s',
+#	   'tagname',
+#	   'file_delim=s',
+#	   'background=s',
+#	   'image_map_name=s',
+#	   'image_map_file=s',
+#	   'image_map_use',
+#	   'image_map_missing_parameter',
+
+	  );
+
+pod2usage()            if $OPT{'help'};
+pod2usage(-verbose=>2) if $OPT{'man'};
+#$OPT{debug_group} .= "conf" if $OPT{cdebug};
+Circos->run(%OPT);
+
+# -------------------------------------------------------------------
+
+=pod
+
+=head1 AUTHOR
+
+Martin Krzywinski L<martink@bcgsc.ca> L<http://mkweb.bcgsc.ca>
+
+=head1 RESOURCES
+
+L<http://www.circos.ca>
+
+=head1 CITING
+
+If you are using Circos in a publication, please cite as
+
+Krzywinski, M., J. Schein, I. Birol, J. Connors, R. Gascoyne,
+D. Horsman, S. Jones, and M. Marra. 2009. Circos: an Information
+Aesthetic for Comparative Genomics. Genome Res 19:1639-1645.
+
+=head1 CONTRIBUTORS
+
+Ken Youens-Clark L<kyclark@gmail.com>
+
+=head1 SEE ALSO
+
+Hive plots L<http://www.hiveplot.com>
+
+=head1 COPYRIGHT & LICENSE
+
+Copyright 2004-2012 Martin Krzywinski, all rights reserved.
+
+This file is part of the Genome Sciences Centre Perl code base.
+
+This script is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This script is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this script; if not, write to the Free Software Foundation,
+Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+=cut
