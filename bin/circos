@@ -16,30 +16,49 @@ circos - generate circularly composited information graphics
 
 =head1 SYNOPSIS
 
-  circos -conf circos.conf [-silent] [-help] [-man]
+  # guess location of configuration file
+  circos
+
+  # use specific configuration file
+  circos -conf circos.conf [-silent]
+
+  # diagnose required modules
+  circos -modules
+
+  # man page
+  circos -man
 
   # detailed debugging for code components
   # see http://www.circos.ca/documentation/tutorials/configuration/debugging
   circos -debug_group GROUP1,[GROUP2,...]
 
-  # configuration dump
-  circos -cdump [BLOCK1/[BLOCK2/...]]
+  # full debugging
+  circos -debug_group _all
+
+  # configuration dump of a block (or block tree) of
+  # any parameters that match REGEXP (optional)
+  circos -cdump [BLOCK1/[BLOCK2/...]]{:REGEXP}
 
   # overriding configuration parameters
   circos -param image/radius=2000p -param ideogram/show=no
 
+  # for fun - randomize all colors in the image except for
+  # COLOR1 and COLOR2
+  circos -randomcolor COLOR1,[COLOR2,...]
+
 =head1 DESCRIPTION
 
-Circos is a software package for visualizing data and information. It
-visualizes data in a circular layout, which makes Circos ideal for
+Circos is for visualizing data in a circular layout, ideal for
 exploring relationships between objects or positions. There are other
 reasons why a circular layout is advantageous, not the least being the
 fact that it is attractive.
 
-Circos is ideal for creating publication-quality infographics and
-illustrations with a high data-to-ink ratio, richly layered data and
-pleasant symmetries. You have fine control each element in the figure
-to tailor its focus points and detail to your audience.
+Circos is not a solution. It's a tool to solve visualization
+problems. For a given problem, you are not guaranteed that it's
+appropriate.
+
+You have fine control over how each data element is displayed, helping
+you to match salience to pertinence.
 
 =head1 CONFIGURATION
 
@@ -121,20 +140,31 @@ the command line using
 
 For example,
 
-  # <ideogram>
-  #   show = no
-  #   ...
-  # </ideogram>
+  <ideogram>
+    show = no
+    ...
+  </ideogram>
+  
   -param ideogram/show=no
 
-  # <ideogram>
-  #   <spacing>
-  #     default = 0.01r
-  #   </spacing>
-  #   ...
-  # </ideogram>
+and
+
+  <ideogram>
+    <spacing>
+      default = 0.01r
+    </spacing>
+    ...
+  </ideogram>
+  
   -param ideogram/spacing/default=0.01r
 
+When conf() is used in the configuration file to retrieve the value of a parmameter (any parameter, not just those set by -param), you get a flexible system for changing the configuration at the command line.
+
+  species = human
+  karytotype = data/karyotype/karyotype.conf(species).txt
+
+  -param species=rat
+   
 Multiple parameters can be redefined, each with its own C<-param> flag
 
   -param show_ticks=no -param image/radius=2000p
@@ -180,15 +210,27 @@ Toggles output of PNG and SVG files.
 
 =back
 
+=head2 Image Elements
+
+=over
+
+=item -show_ticks, -noshow_ticks
+
+=item -show_tick_labels, -noshow_tick_labels
+
+Override the display of ticks and their labels. These are both usually defined in the <ticks> block.
+
+=back
+
 =head2 Output Paths
 
 =over 
 
-=item -outputdir DIR
+=item -outputdir DIR, -dir DIR
 
-=item -outputfile FILE
+=item -outputfile FILE, -file FILE
 
-Change the output directory and filename.
+Change the output directory and filename. The FILE can contain a path.
 
 =back 
 
@@ -196,19 +238,59 @@ Change the output directory and filename.
 
 =over
 
-=item -debug LEVEL
+=item -debug 
 
-Turn on debugging output.
+Turn on basic debugging output. Reports information from 
 
-=item -debug_group GROUP1,[GROUP2,...]
+  image, io, layer, summary, timer
+
+debug groups (see below).
+
+=item -debug_group {+-}GROUP1,[{+-}GROUP2,...]
 
 Turn on debugging output for specific groups. For a list of groups, see
 
   L<http://www.circos.ca/documentation/tutorials/configuration/debugging>
 
+To add a group to the output prefix it with +. To remove it, with -.
+
+  # use default debugging groups but exclude layer and io
+  -debug -debug_group -layer,-io
+
+  # use default debugging groups and add spacing
+  -debug -debug_group +spacing
+
+  # explicitly specify the groups
+  -debug_group png,io,timer
+
+To list the groups that are supported, use the flag without an argument
+
+  -debug_group
+
+=item -time
+
+Report timing information. Same as -debug_group +timer
+
 =item -silent 
 
 Generate no reporting.
+
+=item -paranoid, -noparanoid
+
+Run in paranoid mode (default), or not. The default for this setting is defined by 'paranoid' in etc/housekeeping.conf.
+
+=item -warnings, -nowarnings
+
+Display warnings, or not (default). The default for this setting is defined by 'warnings' in etc/housekeeping.conf.
+
+=item -fakeerror
+=item -fakeerror CAT
+=item -fakeerror ,ID
+=item -fakeerror CAT,ID
+
+Fake an error by displaying the error message for category CAT and error name ID. If one or neither are specified, lists which errors are available. 
+
+Unless you truly enjoy seeing error messages, there should be little reason for you to want to use this.
 
 =back
 
@@ -227,6 +309,20 @@ Show brief usage synopsis.
 =item -man
 
 Show man page.
+
+=back
+
+=head2 Goofing Around
+
+=over
+
+=item -randomcolor [color1,color2,...]
+
+Randomize the color of every element in the image, except for an optional list of colors.
+
+For example, to keep the background white and anything that is black,
+
+  -randomcolor white,black
 
 =back
 
@@ -250,8 +346,9 @@ GetOptions(\%OPT,
 					 'configfile=s',
 					 'param=s@',
 					 'cdump:s',
-					 'cdebug',
 
+					 'dir=s',
+					 'file=s',
 					 'outputdir=s',
 					 'outputfile=s',
 					 'png!',
@@ -267,36 +364,21 @@ GetOptions(\%OPT,
 					 'silent',
 					 'paranoid!',
 					 'warnings!',
-					 'fakeerror=s',
+					 'fakeerror:s',
 					 'debug+',
-					 'debug_group=s',
+					 'debug_group:s',
 					 'version',
+					 'time',
+					 'timer',
+					 'timers',
 
 					 'show_ticks!',
 					 'show_tick_labels!',
-
-#	   'chromosomes=s',
-#	   'chromosomes_display_default!',
-#	   'chromosomes_order=s',
-#	   'chromosomes_scale=s',
-#	   'chromosomes_radius=s',
-#	   'usertext1=s',
-#	   'usertext2=s',
-#	   'usertext3=s',
-#	   'usertext4=s',
-#	   'tagname',
-#	   'file_delim=s',
-#	   'background=s',
-#	   'image_map_name=s',
-#	   'image_map_file=s',
-#	   'image_map_use',
-#	   'image_map_missing_parameter',
 
 	  );
 
 pod2usage()            if $OPT{'help'};
 pod2usage(-verbose=>2) if $OPT{'man'};
-#$OPT{debug_group} .= "conf" if $OPT{cdebug};
 Circos->run(%OPT);
 
 # -------------------------------------------------------------------
@@ -329,7 +411,7 @@ Hive plots L<http://www.hiveplot.com>
 
 =head1 COPYRIGHT & LICENSE
 
-Copyright 2004-2012 Martin Krzywinski, all rights reserved.
+Copyright 2004-2014 Martin Krzywinski, all rights reserved.
 
 This file is part of the Genome Sciences Centre Perl code base.
 

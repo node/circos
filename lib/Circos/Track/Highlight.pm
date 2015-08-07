@@ -4,7 +4,7 @@ package Circos::Track::Highlight;
 
 =head1 NAME
 
-Circos::Track::Link - routines for highlight tracks in Circos
+Circos::Track::Highlight - routines for highlight tracks in Circos
 
 =head1 SYNOPSIS
 
@@ -67,27 +67,31 @@ memoize($f);
 
 # -------------------------------------------------------------------
 sub draw_highlights {
-  # Draw hilight data for a given chromosome. If a test
+  # Draw hilight data for a given ideogram. If a test
   # is included, then only highlights whose options pass
   # the test will be drawn.
   #
   # The test is a hash of variable=>value pairs.
 
   my ( $tracks, $default, $chr, $set, $ideogram, $test ) = @_;
+
   for my $track ( sort { $a->{z} <=> $b->{z} } @$tracks ) {
 		my @param_path = ($track,$default);
 		next unless $track->{__data};
 		my $track_id = $track->{id};
-    Circos::printsvg(qq{<g id="highlight$track_id">}) if $SVG_MAKE;
-    # create a working list of highlights at a given z-depth
-		
+		my $svg_header_done;
+   # create a working list of highlights at a given z-depth
 		for my $datum ( sort {$a->{param}{z} <=> $b->{param}{z} } @{$track->{__data}} ) {
 
       next unless $datum->{data}[0]{chr} eq $chr;
 
-			my $intersection = $datum->{data}[0]{set}->intersect( $Circos::KARYOTYPE->{$chr}{chr}{display_region}{accept} );
+			#my $intersection = $datum->{data}[0]{set}->intersect( $Circos::KARYOTYPE->{$chr}{chr}{display_region}{accept} );
 			# call to old routine
 			#my $intersection = Circos::filter_data($datum->{data}[0]{set},$chr);
+			#next unless $intersection->cardinality;
+
+			# intersect the data point with the current ideogram's extent
+			my $intersection = $datum->{data}[0]{set}->intersect( $set );
 			next unless $intersection->cardinality;
 
 			my $r0  = seek_parameter( "r0", $datum, @param_path );
@@ -117,21 +121,26 @@ sub draw_highlights {
 			$url    = format_url(url=>$url,param_path=>[ $datum, @param_path]);
 
 			for my $subset ( $intersection->sets) {
+				if(! $svg_header_done++) {
+					Circos::printsvg(qq{<g id="highlight$track_id">}) if $SVG_MAKE;
+				}
 				Circos::slice(
-										image       => $IM,
-										start       => $subset->min,
-										end         => $subset->max,
-										chr         => $datum->{data}[0]{chr},
-										radius_from => $r0,
-										radius_to   => $r1,
-										edgecolor   => seek_parameter("stroke_color", $datum, @param_path),
-										edgestroke  => seek_parameter("stroke_thickness", $datum, @param_path),
-										fillcolor   => seek_parameter("fill_color", $datum, @param_path),
-										mapoptions  => { url => $url },
-									 );
+											image       => $IM,
+											start       => $subset->min,
+											end         => $subset->max,
+											chr         => $datum->{data}[0]{chr},
+											radius_from => $r0,
+											radius_to   => $r1,
+											edgecolor   => seek_parameter("stroke_color", $datum, @param_path),
+											edgestroke  => seek_parameter("stroke_thickness", $datum, @param_path),
+											fillcolor   => seek_parameter("fill_color", $datum, @param_path),
+											mapoptions  => { url => $url },
+										 );
 			}
 		}
-		Circos::printsvg(qq{</g>}) if $SVG_MAKE;
+		if($svg_header_done) {
+			Circos::printsvg(qq{</g>}) if $SVG_MAKE;
+		}
 	}
 }
 

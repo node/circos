@@ -85,7 +85,7 @@ for my $f ( qw (rgb_color_opacity rgb_color_transparency ) ) {
 sub allocate_colors {
 
 	# return undef if ! $CONF{image}{pngmake};
-    
+
 	my $image            = shift;
 	my $allocated_colors = 0;
 	my $colors           = {};
@@ -110,11 +110,17 @@ sub allocate_colors {
 		}
 		my $color_definition = $CONF{colors}{$color_name};
 		next if $color_definition =~ /\|/;
-		if (my @hsv = validate_hsv($color_definition,0)) {
+		if (my @hsv    = validate_hsv($color_definition,0)) {
 	    my @rgb255   = hsv_to_rgb(@hsv);
 	    my @rgb      = rgb_to_rgb255(@rgb255);
 	    printdebug_group("color","parsing_color hsv",$color_definition,"rgb",@rgb);
 	    allocate_color($color_name,\@rgb,$colors,$image);
+		} elsif (my @lch = validate_lch($color_definition,0)) {
+			my @rgb = lch_to_rgb(@lch);
+	    allocate_color($color_name,\@rgb,$colors,$image);
+		} elsif (my @rgb_hex = validate_hex($color_definition,0)) {
+	    printdebug_group("color","parsing_color hex",$color_definition,"rgb",@rgb_hex);
+	    allocate_color($color_name,\@rgb_hex,$colors,$image);
 		} elsif (my @rgb = validate_rgb($color_definition,0)) {
 	    printdebug_group("color","parsing_color rgb",$color_definition);
 	    allocate_color($color_name,\@rgb,$colors,$image);
@@ -326,6 +332,7 @@ sub allocate_color {
 		eval {
 	    printdebug_group("color","allocate_color",@rgb);
 	    $colors->{$name} = $image->colorAllocateAlpha(@rgb);
+			#printinfo($name,$colors->{$name},@rgb);
 		};
 		if ($@) {
 	    fatal_error("color","cannot_allocate",$name,$definition,$@);
@@ -392,6 +399,28 @@ sub validate_rgb_list {
 }
 
 ################################################################
+# Verify that a list is an allowable LCH or LCHA list.
+#
+# A = alpha (0..1), 0 = transparent, 1 = opaque
+sub validate_lch_list {
+	my ($lch,$strict) = @_;
+  my $n = grep(defined $_,@$lch);
+	my ($l,$c,$h,$a) = @$lch;
+	return unless $n == 3 || $n == 4;
+	return unless is_number($l,"real",$strict,0,150);
+	return unless is_number($c,"real",$strict,0,150);
+	return unless is_number($h,"real",$strict,0,360);
+	if (defined $a) {
+		if (is_number($a, "real", $strict, 0,1)) {
+			# ok
+		} else {
+			fatal_error("color","bad_alpha",$a);
+		}
+	}
+	return 1;
+}
+
+################################################################
 # Verify that a list is an allowable RGB or RGBA list.
 #
 # A = alpha (0..1), 0 = transparent, 1 = opaque
@@ -411,6 +440,18 @@ sub validate_hsv_list {
 		}
 	}
 	return 1;
+}
+
+sub validate_hex {
+	my ($definition,$strict) = @_;
+	$strict = 1 if ! defined $strict;
+	return if $definition =~ /[^0-9A-F]/i;
+	return unless length($definition) == 6;
+	my @rgb = map { $_ } unpack 'C*', pack 'H*', $definition;
+	if(@rgb && validate_rgb_list(\@rgb,1)) {
+		return @rgb;
+	}
+	return;
 }
 
 ################################################################
@@ -433,10 +474,13 @@ sub validate_hsv {
 
 sub validate_rgb {
 	my ($definition,$strict) = @_;
+	#printinfo("rgb",$definition);
 	$strict = 1 if ! defined $strict;
 	my @rgb;
 	if ( ref $definition eq "ARRAY") {
 		@rgb = @$definition;
+	} elsif ( $definition =~ /rgb\s*\(\s*(.+)\s*\)/i ) {
+		@rgb = split(/\s*,\s*/,$1);
 	} elsif ( $definition =~ /,/ ) {
 		@rgb = split(/\s*,\s*/,$definition);
 	}
@@ -446,6 +490,24 @@ sub validate_rgb {
 	fatal_error("color","malformed_rgb",join(",",@rgb)) if $strict;
 	return;
 }
+
+sub validate_lch {
+	my ($definition,$strict) = @_;
+	#printinfo("rgb",$definition);
+	$strict = 1 if ! defined $strict;
+	my @lch;
+	if ( ref $definition eq "ARRAY") {
+		@lch = @$definition;
+	} elsif ( $definition =~ /lch\s*\(\s*(.+)\s*\)/i ) {
+		@lch = split(/\s*,\s*/,$1);
+	}
+	if (@lch && validate_lch_list(\@lch,$strict)) {
+		return @lch;
+	}
+	fatal_error("color","malformed_lch",join(",",@lch)) if $strict;
+	return;
+}
+
 
 # -------------------------------------------------------------------
 sub rgb_color_transparency {
@@ -457,9 +519,9 @@ sub rgb_color_transparency {
 # -------------------------------------------------------------------
 sub rgb_color {
   my $color = shift;
+  return undef if ! defined $color;
   $color = lc $color;
   #confess if ! defined $color;
-  return undef if ! defined $color;
   if ( $color =~ /(.+)_a(\d+)/ ) {
 		my $color_root = $1;
 		return rgb_color($color_root);
@@ -482,17 +544,150 @@ sub rgb_color {
   }
 }
 
+sub xyY_to_XYZ
+{
+	my ($xyy) = @_;
+	my ($x, $y, $Y) = @{$xyy};
+	my ($X, $Z);
+	if (! ($y == 0))
+	{
+		$X = $x * $Y / $y;
+		$Z = (1 - $x - $y) * $Y / $y;
+	}
+	else
+	{
+		$X = 0; $Y = 0; $Z = 0;
+	}
+	return [ $X, $Y, $Z ];
+}
+
+################################################################
+# LCH to RGB
+sub lch_to_rgb {
+	use Math::Trig;
+	use POSIX qw(pow);
+  my $white = { 'D65' => [ 0.312713, 0.329016 ] }; # Daylight 6504K
+	my $srgb = {
+							white_point => 'D65',
+							gamma => 'sRGB', # 2.4,
+							m     => [ [  0.4124237575757575,  0.2126560000000000,  0.0193323636363636 ], [  0.3575789999999999,  0.7151579999999998,  0.1191930000000000 ], [  0.1804650000000000,  0.0721860000000000,  0.9504490000000001 ] ], 
+							mstar => [ [  3.2407109439941704, -0.9692581090654827,  0.0556349466243886 ], [ -1.5372603195869781,  1.8759955135292130, -0.2039948042894247 ], [ -0.4985709144606416,  0.0415556779089489,  1.0570639858633826 ] ], 
+						 };
+	
+	my ($L,$C,$H,$no_error) = @_;
+
+	# first conver to luv
+	my ($u, $v);
+	$H = deg2rad($H);
+	my $th = tan($H);
+	$u = $C / sqrt( $th * $th + 1 );
+	$v = sqrt($C*$C - $u*$u);
+
+	if ($H < 0) { $H = $H + 2*pi; }
+	if ($H > pi/2 && $H < 3*pi/2) { $u = - $u; }
+	if ($H > pi) { $v = - $v; }
+
+	# now luv -> XYZ
+	my ($Xw, $Yw, $Zw) = @{xyY_to_XYZ([@{$white->{D65}},1.0])};
+	my ($X, $Y, $Z);
+
+	my $epsilon =  0.008856;
+	my $kappa = 903.3;
+
+	if ($L > $kappa*$epsilon) { $Y = pow( ($L + 16)/116, 3 ); } else { $Y = $L / $kappa; }
+
+	my ($upw, $vpw) = ( 4 * $Xw / ( $Xw + 15 * $Yw + 3 * $Zw ),
+						9 * $Yw / ( $Xw + 15 * $Yw + 3 * $Zw ) );
+
+	if (! ($L == 0 && $u == 0 && $v == 0))
+	{
+		my $a = (1/3)*( ((52 * $L) / ($u + 13 * $L * $upw)) - 1 );
+		my $b = -5 * $Y;
+		my $c = -1/3;
+		my $d = $Y * ( ((39 * $L) / ($v + 13 * $L * $vpw)) - 5 );
+		$X = ($d - $b)/($a - $c);
+		$Z = $X * $a + $b;
+	}	else {
+		($X, $Z) = (0.0, 0.0);
+	}
+	my $rgb_lin   = _mult_v3_m33([$X,$Y,$Z], $srgb->{mstar});
+	my ($R,$G,$B) = @{linear_RGB_to_RGB($rgb_lin, $srgb)};
+	$R = $R<0 ? 0 : $R > 1 ? 1 : $R;
+	$G = $G<0 ? 0 : $G > 1 ? 1 : $G;
+	$B = $B<0 ? 0 : $B > 1 ? 1 : $B;
+	return map { round(255 * $_) } ($R,$G,$B);
+}
+
+sub linear_RGB_to_RGB
+{
+	my ($rgb, $space) = @_;
+	my ($R, $G, $B) = @{$rgb};
+
+	if ($space->{gamma} eq 'sRGB') # handle special sRGB gamma curve
+	{
+		if ( abs($R) <= 0.0031308 ) { $R = 12.92 * $R; }
+		else { $R = 1.055 * &_apow($R, 1/2.4) - 0.055; };
+
+		if ( abs($G) <= 0.0031308 ) { $G = 12.92 * $G; }
+		else { $G = 1.055 * &_apow($G, 1/2.4) - 0.055; }
+
+		if ( abs($B) <= 0.0031308 ) { $B = 12.92 * $B; }
+		else { $B = 1.055 * &_apow($B, 1/2.4) - 0.055; }
+	}
+	else 
+	{
+		$R = &_apow($R, 1/$space->{gamma});
+		$G = &_apow($G, 1/$space->{gamma});
+		$B = &_apow($B, 1/$space->{gamma});
+	}
+	return [ $R, $G, $B ];
+}
+
+sub _apow
+{
+	my ($v, $p) = @_;
+	return ($v >= 0 ?
+			pow($v, $p) : 
+			-pow(-$v, $p));
+}
+
+
+sub _mult_v3_m33
+{
+	my ($v, $m) = @_;
+	my $vout = [
+				 ( $v->[0] * $m->[0]->[0] + $v->[1] * $m->[1]->[0] + $v->[2] * $m->[2]->[0] ), 
+				 ( $v->[0] * $m->[0]->[1] + $v->[1] * $m->[1]->[1] + $v->[2] * $m->[2]->[1] ), 
+				 ( $v->[0] * $m->[0]->[2] + $v->[1] * $m->[1]->[2] + $v->[2] * $m->[2]->[2] )
+				 ];
+	return $vout;
+}
+
+
 ################################################################
 # Given an RGB value, return the color name
 sub rgb_to_color_name {
-	my ($r,$g,$b,$no_error) = @_;
+	my @args = @_;
+	my ($r,$g,$b,$a,$no_error);
+	if(@args == 3) {
+		($r,$g,$b) = @args;
+	} elsif (@args == 4) {
+		($r,$g,$b,$no_error) = @args;
+	} elsif (@args == 5) {
+		($r,$g,$b,$a,$no_error) = @args;
+	} else {
+		die "Bad number of arguments.";
+	}
+	#my ($r,$g,$b,$no_error) = @_;
+	# If alpha is found, then assume the color has not been defined
+	return;
 	for my $color (keys %$COLORS) {
 		next if $color =~ /_a\d+$/;
 		my $fetch_color = fetch_color($color);
 		my @crgb = $IM->rgb( fetch_color($color) );
 		if ($r == $crgb[0] &&
-				$g == $crgb[1] &&
-				$b == $crgb[2]) {
+						$g == $crgb[1] &&
+								$b == $crgb[2]) {
 	    return $color;
 		}
 	}
@@ -538,12 +733,20 @@ sub rgb_to_rgb255 {
 	return @rgb255;
 }
 
+################################################################
+# Fetch the color. If -randomcolor is defined, then the 
+# returned color will be a random RGB color unless it is one of the
+# colors given as a list -randomcolor white,black
+#
+#
 sub fetch_color {
 	my ($color_name,$color_table,$im) = shift;
 	$color_table ||= $COLORS;
 	$im          ||= $IM;
 	start_timer("colorfetch");
-	if (defined fetch_conf("randomcolor") && ! grep($color_name eq $_, split(",",fetch_conf("randomcolor")))) {
+	if (defined fetch_conf("randomcolor") && 
+			! grep($color_name eq $_, split(",",fetch_conf("randomcolor")))) {
+		# random color
 		my @rgb = map { int rand(256) } (0,1,2);
 		my $color_name = join(",",@rgb);
 		if (defined $color_table->{$color_name}) {
@@ -558,6 +761,7 @@ sub fetch_color {
 	}
 	if (exists $COLORS->{$color_name}) {
 		stop_timer("colorfetch");
+		printdebug_group("color","fetch",$color_name,$COLORS->{$color_name});
 		return $COLORS->{$color_name};
 	} elsif ($COLORS->{lc $color_name}) {
 		my $lc_color = lc $color_name;
@@ -575,6 +779,17 @@ sub fetch_color {
 			stop_timer("colorfetch");
 			return $color_table->{$color_name};
 		}
+	} elsif (my @rgb_hex = validate_hex($color_name,0)) {
+		my $color = rgb_to_color_name(@rgb_hex,1);
+		if (defined $color) {
+			stop_timer("colorfetch");
+			return $color_table->{$color};
+		} else {
+			printdebug_group("color","dynamic allocation hex",$color_name);
+			allocate_color($color_name,$color_name,$color_table,$im);
+			stop_timer("colorfetch");
+			return $color_table->{$color_name};
+		}
 	} elsif (my @hsv = validate_hsv($color_name,0)) {
 		my @rgb255   = hsv_to_rgb(@hsv);
 		my @rgb      = rgb_to_rgb255(@rgb255);
@@ -583,6 +798,8 @@ sub fetch_color {
 		allocate_color($color_name,$rgb_text,$color_table,$im);
 		stop_timer("colorfetch");
 		return $color_table->{$color_name};
+	} elsif (my $default_color = fetch_conf("default_color")) {
+		return $color_table->{$default_color};
 	} else {
 		fatal_error("color","undefined",$color_name);
 	}
@@ -616,6 +833,7 @@ sub find_transparent {
 
 sub color_to_list {
 	my $color = shift;
+	return if ! defined $color;
 	my @color_names = split(/[\s+,]+/,$color);
 	my @colors;
 	for my $color_name (@color_names) {

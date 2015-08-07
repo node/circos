@@ -41,6 +41,7 @@ our @EXPORT = qw(
 									format_timer
 									report_timer
 
+									list_var_options
 									printstructure
 
 									printerror
@@ -64,13 +65,127 @@ use Carp qw( carp confess croak );
 use Data::Dumper;
 use FindBin;
 use Memoize;
+use List::MoreUtils qw(uniq);
 use Time::HiRes qw(gettimeofday tv_interval);
-
 use lib "$FindBin::RealBin";
 use lib "$FindBin::RealBin/../lib";
 use lib "$FindBin::RealBin/lib";
 
 use Circos::Constants;
+
+our @default_debug_groups = qw(summary output image layer io karyotype timer);
+our @default_groups = qw(summary output);
+our @debug_groups = qw(
+											 angle
+											 anglepos
+											 axis
+											 background
+											 bezier
+											 brush
+											 cache
+											 chrfilter
+											 color
+											 conf
+											 counter
+											 cover
+                       eval
+											 font
+											 heatmap
+											 ideogram
+											 image
+											 io
+											 karyotype
+											 layer
+											 legend
+											 link
+											 output
+                       parse
+											 png
+											 rule
+											 scale
+											 spacing
+											 stats
+											 summary
+											 svg
+											 text
+											 textplace
+											 tick
+											 tile
+											 timer
+											 unit
+											 url
+											 zoom
+											);
+
+sub register_debug_groups {
+	my ($opt,$conf) = @_;
+	my %group = $opt->{debug} ? map { $_=>1 } @default_debug_groups : map { $_=>1 } @default_groups;
+	if($opt->{debug_group}) {
+		#printinfo("-debug_group",$opt->{debug_group});
+		%group = () if $opt->{debug_group} !~ /[+-]/;
+		for my $g (split($COMMA,$opt->{debug_group})) {
+			#printinfo("parsing",$g);
+			if(! grep($g eq $_, @debug_groups) && $g ne "_all") {
+				Circos::Error::fatal_error("configuration","no_debug_group",$g,join(", ",@debug_groups));
+			}
+			if($g =~ /^-(.+)/) {
+				#printinfo("deleting",$g);
+				delete $group{$1};
+			} elsif( $g =~ /^[+](.+)/ ) {
+				#printinfo("adding",$1);
+				$group{$1}++;
+			} else {
+				#printinfo("adding",$g);
+				$group{$g}++;
+			}
+		}
+	} elsif (exists $opt->{debug_group}) {
+		printinfo("The following debug report groups are avilable. Those marked by * are on by default. Use with -debug_group");
+		for my $g (@debug_groups) {
+			my $flag = grep($_ eq $g, @default_debug_groups) ? "*" : " ";
+			printinfo("$flag $g");
+		}
+		exit;
+	}
+	$group{timer} = 1 if $opt->{time} || $opt->{timer} || $opt->{timers};
+	#printinfo("effective -debug_group",keys %group);
+	#printinfo("sort -debug_group",sort(keys %group));
+	#printinfo("uniq -debug_group",uniq(keys %group));
+	#printinfo("sort uniq -debug_group",sort(uniq(keys %group)));
+	if(keys %group) {
+		$conf->{debug_group} = $opt->{debug_group} = join($COMMA,sort(uniq(keys %group)));
+	} else {
+		$conf->{debug_group} = $opt->{debug_group} = $EMPTY_STR;
+	}
+}
+
+sub list_var_options {
+	my ($datum,$expr,$param_path) = @_;
+	printinfo("\nYou asked for help in the expression [$expr].");
+	printinfo("In this expression the arguments marked with * are available for the var() function.");
+
+	my %var;
+	for my $leaf ($datum,@$param_path) {
+		for my $node ($leaf->{param},$leaf->{data}[0]) {
+			next unless defined $node && ref $node eq "HASH";
+			for my $key (keys %$node) {
+				next unless defined $node->{$key};
+				next if $var{$key}; # parameter already seen
+				my $type  = ref $node->{$key};
+				my $value = $node->{$key};
+				if(! $type) {
+					$var{$key}{value} = $node->{$key};
+					$var{$key}{flag}  = "*";
+				} else {
+					$var{$key}{value} = $type;
+				}
+			}
+		}
+	}
+	for my $key (sort keys %var) {
+		printinfo(sprintf("%20s %1s %s",$key,$var{$key}{flag}||"",$var{$key}{value}));
+	}
+}
 
 # -------------------------------------------------------------------
 sub list_as_string {
@@ -241,6 +356,7 @@ sub format_timer {
 		# initialize debug group lookup table, if it has not been
 		# previously initialized or if the debug_group value is different
 		my $key = $Circos::Configuration::CONF{"debug_group"};
+		return if ! $key;
 		if (! defined $prevkey || $key ne $prevkey)	{
 			$lookup = {};
 			for my $g (split($COMMA,$key)) {
@@ -259,7 +375,7 @@ sub format_timer {
 	
 # -------------------------------------------------------------------
 sub printdumper {
-	$Data::Dumper::Sortkeys  = 1;
+	$Data::Dumper::Sortkeys  = 1 unless ref $Data::Dumper::Sortkeys eq "CODE";
 	$Data::Dumper::Indent    = 2;
 	$Data::Dumper::Quotekeys = 0;
 	$Data::Dumper::Terse     = 0;
@@ -272,13 +388,13 @@ sub printdumperq {
 
 # -------------------------------------------------------------------
 sub printwarning {
-    if (Circos::Configuration::fetch_conf("warnings") ||
-	Circos::Configuration::fetch_conf("paranoid")) {
-	Circos::Error::error("warning","general",join(" ",@_));
-    }
-    if (Circos::Configuration::fetch_conf("paranoid")) {
-	Circos::Error::fatal_error("warning","paranoid");
-    }
+	if (Circos::Configuration::fetch_conf("warnings") ||
+			Circos::Configuration::fetch_conf("paranoid")) {
+		Circos::Error::error("warning","general",join(" ",@_));
+	}
+	if (Circos::Configuration::fetch_conf("paranoid")) {
+		Circos::Error::fatal_error("warning","paranoid");
+	}
 }
 
 # -------------------------------------------------------------------

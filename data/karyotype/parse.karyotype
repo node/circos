@@ -28,10 +28,10 @@ prefix="chr"
 fi
 
 # chromosomes
-cat $file | grep -v ^\# | tr A-Z a-z | sort +0 -1 +2rn -3 | sort -u -k 1,1 | sed 's/\t/ /g' | tr -s " " | sed 's/chr//' | awk '{print $1,$0}' | awk -v prefix=$2 '{print "chr -",prefix$2,$1,0,$4,"chr"$1}' | sort -n +3 -4 
+cat $file | grep -v ^\# | tr A-Z a-z | sort +0 -1 +2rn -3 | sort -u -k 1,1 | sed 's/\t/ /g' | tr -s " " | sed 's/chr//' | awk '{print $1,$0}' | awk -v prefix=$2 '{print "chr -",prefix$2,$1,0,$4,"chr"$1}' | sort -n +3 -4 | sed 's/x/X/g' | sed 's/y/Y/g'
 
 # bands
-cat $file  | grep -v ^\# | tr A-Z a-z | sed 's/\t/ /g' | tr -s " " | sed "s/chr/$prefix/" | awk '{print $1,$0}' | sed 's/chr//' | awk '{print "band",$2,$5,$5,$3,$4,$6}' | sort +1 -2 +4n -5
+cat $file  | grep -v ^\# | tr A-Z a-z | sed 's/\t/ /g' | tr -s " " | sed "s/chr/$prefix/" | awk '{print $1,$0}' | sed 's/chr//' | awk '{print "band",$2,$5,$5,$3,$4,$6}' | sort +1 -2 +4n -5 | sed 's/x/X/g' | sed 's/y/Y/g'
 
 
 

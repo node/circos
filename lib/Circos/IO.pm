@@ -34,8 +34,7 @@ use strict;
 use warnings;
 
 use base 'Exporter';
-our @EXPORT = qw(
-);
+our @EXPORT = qw();
 
 use Carp qw( carp confess croak );
 use Storable qw(dclone);
@@ -61,35 +60,32 @@ use Circos::Debug;
 use Circos::Error;
 use Circos::Ideogram;
 use Circos::Utils;
+use Circos::Unit;
 
 # -------------------------------------------------------------------
 sub read_data_file {
-	# Read a data file and associated options.
-	#
-	# Depending on the data type, the format is one of
-	#
-	# - interval data
-	# chr start end options
-	#
-	# - interval data with value (or label)
-	# chr start end value options
-	#
-	# where the options string is of the form
-	#
-	# var1=value1,var2=value2,...
-	#
-	# v0.48 - if min>max, then the data point is tagged with rev=>1
-	# v0.60 - one-line links are now supported
-	# v0.62 - register which ideograms have data for this track
+  # Read a data file and associated options.
+  #
+  # Depending on the data type, the format is one of
+  #
+  # - interval data
+  # chr start end options
+  #
+  # - interval data with value (or label)
+  # chr start end value options
+  #
+  # where the options string is of the form
+  #
+  # var1=value1,var2=value2,...
 
-	my ($file,$type,$options,$KARYOTYPE) = @_;
+  my ($file,$type,$options,$KARYOTYPE) = @_;
 
-	open(F,$file) || fatal_error("io","cannot_read",$file,$type,$!);
-	printdebug_group("io","reading input file",$file,"type",$type);
+  open(F,$file) || fatal_error("io","cannot_read",$file,$type,$!);
+  printdebug_group("io","reading input file",$file,"type",$type);
 
-	# specify '-' if a field is not used and to be skipped
+  # specify '-' if a field is not used and to be skipped
 
-	my $line_type = {
+  my $line_type = {
 									 coord_options       => [qw(chr start end options)],
 									 coord_value_options => [qw(chr start end value options)],
 									 coord_label_options => [qw(chr start end label options)],
@@ -97,225 +93,239 @@ sub read_data_file {
 									 link                => [qw(chr start end chr start end options)],
 									};
 
-	my $fields = {
+  my $fields = {
 								scatter      => $line_type->{coord_value_options},
 								line         => $line_type->{coord_value_options},
 								histogram    => $line_type->{coord_value_options},
 								heatmap      => $line_type->{coord_value_options},
-								highlight    => $line_type->{coord_options},
-								tile         => $line_type->{coord_options},
-								text         => $line_type->{coord_label_options},
-								connector    => $line_type->{coord_options},
+								highlight    => $line_type->{coord_value_options},
+								tile         => $line_type->{coord_value_options},
+								text         => $line_type->{coord_value_options},
+								connector    => $line_type->{coord_value_options},
 								link_twoline => $line_type->{link_twoline},
 								link         => $line_type->{link},
 							 };
 
-	my $rx = {
-						chr     => { rx => qr/^[\w.:&-]+$/,      comment => "word with optional -.:&" },
-						start   => { rx => qr/^-?\d+$/,          comment => "integer" },
-						end     => { rx => qr/^-?\d+$/,          comment => "integer" },
-						value   => { rx => qr/^($RE{num}{real},?)+$/, comment => "floating point value" },
-						label   => { rx => qr/^.+/,              comment => "non-empty string" },
-						options => { rx => qr/=/,                comment => "variable value pair (x=y)" },
+	# The value can now be any string. This allows the same data files to be used
+	# for text and data tracks.
+
+  my $rx = {
+						chr     => { rx => qr/^[\w.:&-]+$/,
+												 comment => "word with optional -.:&" },
+						start   => { rx => qr/^-?[\d,_]+$/,
+												 sx_from => qr/[,_]/,
+												 sx_to   => "",
+												 comment => "integer" },
+						end     => { rx => qr/^-?[\d,_]+$/,
+												 sx_from => qr/[,_]/,
+												 sx_to   => "",
+												 comment => "integer" },
+						value   => { rx => qr/^.+/,
+												 comment => "non-empty string" },
+						options => { rx => qr/=/,
+												 comment => "variable value pair (x=y)" },
 					 };
 
-	my ($data,$prev_value);
-	my ($recnum,$linenum) = (0,0);
+  my ($data,$prev_value);
+  my ($recnum,$linenum) = (0,0);
 
-	start_timer("io");
+  start_timer("io");
 
-	my $param_type = $type =~ /link/ ? "link" : $type;
+  my $param_type = $type =~ /link/ ? "link" : $type;
 
-	my $hide_link_twoline;
+  my $hide_link_twoline;
 
-	my $delim_rx = fetch_conf("file_delim") || undef;
-	if ($delim_rx && fetch_conf("file_delim_collapse")) {
-		$delim_rx .= "+";
-	}
-
-	my $num_fields_less_one = @{$fields->{$type}}-1;
+  my $delim_rx = fetch_conf("file_delim") || undef;
+  if ($delim_rx && fetch_conf("file_delim_collapse")) {
+    $delim_rx .= "+";
+  }
 
  LINE:
-	while (<F>) {
-		chomp;
-		s/^\s+//;         # strip leading spaces
-		s/\s+\#.*//;      # strip comments
-		s/\r$//;          # strip windows carriage return
-		next if /^(#|$)/; # skip empty lines
-		$linenum++;
-		my @tok = $delim_rx ? split(/$delim_rx/) : split;
-		if($type eq "link" && @tok < 6 ) {
-			$type = "link_twoline";
+  while (<F>) {
+    chomp;
+    s/^\s+//;										# strip leading spaces
+    s/\s+\#.*//;								# strip comments
+    s/\r$//;										# strip windows carriage return
+    next if /^(#|$)/;						# skip empty lines
+    next if $options->{file_rx} && ! /$options->{file_rx}/;
+    $linenum++;
+    my @tok = $delim_rx ? split(/$delim_rx/) : split;
+    if ($type eq "link" && @tok < 6 ) {
+      $type = "link_twoline";
+    }
+
+    my $line  = $_;
+    my $datum = { data => [ ], param => { } };
+
+		my @fields = @{$fields->{$type}};
+		if($type !~ /link/) {
+			if(@tok == @fields) {
+				# all fields are being used
+			} elsif (@tok == @fields-1) {
+				# one of the fields is missing - either the value
+				# or options. Figure out which.
+				my $last_tok = $tok[-1];
+				if($last_tok =~ /=/) {
+					# look like the last field is the value, not options
+					@fields = grep($_ !~ /value/, @fields);
+				}
+			} elsif (@tok == @fields-2 
+							 && grep($type eq $_, qw(tile highlight connector))) {
+				@fields = @fields[0..2];
+			} else {
+				fatal_error("parsedata","bad_field_count",$_,$file,$type,join(" ",@fields));
+			}
 		}
 
-		my $line  = $_;
-		my $datum = { data => [ ], param => { } };
-
-		for my $i ( 0..$num_fields_less_one ) {
-
-	    my $value = $tok[$i];
-			next unless defined $value;
-	    my $field = $fields->{$type}[$i];
-
-			# not using this at the moment
-	    #next if $field eq $DASH;
-			
-			# make sure the value has the right format, if a format rx is available
-			if( $rx->{$field} ) {
-				my ($rx,$rxcomment) = @{$rx->{$field}}{qw(rx comment)};
-				if ( $value !~ /$rx/ ) {
+	FIELD:
+    for my $i ( 0 .. @fields-1 ) {
+      my $value = $tok[$i];
+      next unless defined $value;
+      my $field = $fields[$i];
+			$field =~ s/\?$//;
+      # make sure the value has the right format, if a format rx is available
+      if ( $rx->{$field} ) {
+				my ($rx_field,$rxcomment) = @{$rx->{$field}}{qw(rx comment)};
+				if ( $value !~ /$rx_field/ ) {
 					fatal_error("parsedata","bad_field_format",$field,$value,$rxcomment,$file,$line);
 				}
-			}
+				if(exists $rx->{$field}{sx_from} && exists $rx->{$field}{sx_to}) {
+					$value =~ s/$rx->{$field}{sx_from}/$rx->{$field}{sx_to}/ig;
+				}
+      }
 
-			# if this field is 'chr' make sure this chromosome exits
-			if($field eq "chr") {
+      # if this field is 'chr' make sure this chromosome exits
+      if ($field eq "chr") {
 				if ( ! exists $KARYOTYPE->{$value} ) {
-					if(fetch_conf("undefined_ideogram") eq "exit") {
+					if (fetch_conf("undefined_ideogram") eq "exit") {
 						fatal_error("parsedata","no_such_ideogram",$value,$file,$line);
 					} else {
 						next LINE;
 					}
 				} elsif ( ! $KARYOTYPE->{$value}{chr}{display} ) {
 					# this chromosome is not displayed
-					if($type eq "link_twoline") {
+					if ($type eq "link_twoline") {
 						$hide_link_twoline->{$datum->{data}[0]{id}}++;
 					}
 					next LINE;
 				}
-			}
-			if($field eq "id" && $type eq "link_twoline" && $hide_link_twoline->{$value}) {
+      }
+      if ($field eq "id" && $type eq "link_twoline" && $hide_link_twoline->{$value}) {
 				next LINE;
-			}
+      }
 
-			# If this is an options field, store it in the 'param' key.
-	    if ( $field eq "options" && defined $value && $value ne $EMPTY_STR) {
-				my @params;
-				if($value =~ /[()]/) {
-					# use the slower parser only when we know the options field includes brackets
-					# color=(255,0,0),x=1 -> color=(255,0,0) x=1
-					@params = parse_csv($value);
-				} else {
-					@params = split(",",$value);
-				}
-				my %params;
-				for my $param ( @params ) {
-					if ($param =~ /^([^=]+)=(.+)$/) {
-						$params{$1} = $2;
-					} else {
-						fatal_error("parsedata","bad_options",$param);
-					}
-				}
-				$datum->{param} = \%params;
-	    } else {
-				# all fields are named 
+      # If this is an options field, store it in the 'param' key.
+      if ( $field eq "options" && defined $value && $value ne $EMPTY_STR) {
+				my $options = parse_options($value);
+				$datum->{param} = $options;
+      } else {
+				# all fields are named
 				my $field_name = $field eq "label" ? "value" : $field;
 				# Store this field in the datum's point. If an entry
 				# with this field already exists, another is created.
 				# This automatically accommodates data with multiple
 				# coordinates (e.g. link)
-				if(! exists $datum->{data}[0]{$field_name}) {
+				if (! exists $datum->{data}[0]{$field_name}) {
 					$datum->{data}[0]{$field_name} = $value;
 				} else {
 					$datum->{data}[1]{$field_name} = $value;
 				}
-	    }
-			if ( $field eq "value" && defined $prev_value) {
+      }
+      if ( $field eq "value" && defined $prev_value) {
 				# min_value_change requies that adjacent data points vary by a minimum amount
 				if ($options->{min_value_change} && abs($value-$prev_value) < $options->{min_value_change} ) {
 					next LINE;
 				}
 				# skip_run avoids consecutive data points with the same value
-				if ($options->{skip_run} &&	$value eq $prev_value ) {
+				if ($options->{skip_run} && $value eq $prev_value ) {
 					next LINE;
 				}
-	    }
-		}
+      }
+    }
 
-		$prev_value = $datum->{data}[0]{value};
+    $prev_value = $datum->{data}[0]{value};
 
-		# verify that this data point is on a drawn ideogram
-
-		if ( ! is_on_ideogram($datum) ) {
-			if($type eq "link_twoline") {
+    # verify that this data point is on a drawn ideogram
+    if ( ! is_on_ideogram($datum) ) {
+      if ($type eq "link_twoline") {
 				$hide_link_twoline->{$datum->{data}[0]{id}}++;
-			}
-			next LINE;
-		}
-	
-		# if the start/end values are reversed, i.e. end<start, then swap
-		# them and set rev flag
-		my $num_rev = 0;
-		for my $point (@{$datum->{data}}) {
-			if($point->{start} > $point->{end}) {
+      }
+      next LINE;
+    }
+    # if the start/end values are reversed, i.e. end<start, then swap them and set rev flag
+    my $num_rev = 0;
+    for my $i (0..@{$datum->{data}}-1) {
+      my $point = $datum->{data}[$i];
+      if ($point->{start} > $point->{end}) {
 				@{$point}{qw(start end)} = @{$point}{qw(end start)};
 				$point->{rev} = 1;
 				$num_rev++;
-			} else {
+      } else {
 				$point->{rev} = 0;
-			}
-		}
+      }
+    }
 
-		# if an odd number of coordinates is inverted, label
-		# this datum inverted
-		if($type =~ /link/ && ! defined $datum->{param}{inv}) {
-			if($num_rev % 2) {
+    # if an odd number of coordinates is inverted, label
+    # this datum inverted
+    if ($type =~ /link/ && ! defined $datum->{param}{inv}) {
+      if ($num_rev % 2) {
 				$datum->{param}{inv} = 1;
-			} else {
+      } else {
 				$datum->{param}{inv} = 0;
-			}
-		}
+      }
+    }
 
-		# if padding is required, expand the coordinate
-		if($type ne "text" && $type ne "tile") {
-			if (my $padding = $options->{padding} || $datum->{param}{padding} ) {
+    # if padding is required, expand the coordinate
+    if ($type ne "text" && $type ne "tile") {
+      if (my $padding = $options->{padding} || $datum->{param}{padding} ) {
 				for my $point (@{$datum->{data}}) {
 					$point->{start} -= $padding;
 					$point->{end}   += $padding;
 				}
-			}
-		}
+      }
+    }
 
-		# if the minsize parameter is set, then the coordinate span is
-		# expanded to be at least this value
-		if (my $minsize = $options->{minsize} || $datum->{param}{minsize}) {
-			Circos::DataPoint::apply_filter("minsize",
+    # if the minsize parameter is set, then the coordinate span is
+    # expanded to be at least this value
+    if (my $minsize = $options->{minsize} || $datum->{param}{minsize}) {
+			$minsize = unit_parse( $minsize );
+      Circos::DataPoint::apply_filter("minsize",
 																			$minsize,
 																			$datum);
 			
-		}
+    }
 
-		# if a set structure was requested, make it
-		if ($options->{addset}) {
-			for my $point (@{$datum->{data}}) {
+    # if a set structure was requested, make it
+    if ($options->{addset}) {
+      for my $point (@{$datum->{data}}) {
 				$point->{set} = make_set( @{$point}{qw(start end)});
-			}
-		}
+      }
+    }
 
-		if ($type eq "link_twoline") {
-			my $linkid = $datum->{data}[0]{id};
-			die "no link id".Dumper($datum) if ! defined $linkid;
-			if(! $hide_link_twoline->{$linkid}) {
+    if ($type eq "link_twoline") {
+      my $linkid = $datum->{data}[0]{id};
+      die "no link id".Dumper($datum) if ! defined $linkid;
+      if (! $hide_link_twoline->{$linkid}) {
 				push @{$data->{$linkid}}, $datum;
-			}
-		} elsif ( $type eq "histogram" && defined $datum->{data}[0]{value} && $datum->{data}[0]{value} =~ /,/ ) {
-			#
-			# for stacked histograms where values are comma separated
-			#
-			my @values = split( /,/, $datum->{data}[0]{value} );
-			my ( @values_sorted, @values_idx_sorted );
-			if ( $options->{sort_bin_values} ) {
+      }
+    } elsif ( $type eq "histogram" && defined $datum->{data}[0]{value} && $datum->{data}[0]{value} =~ /,/ ) {
+      #
+      # for stacked histograms where values are comma separated
+      #
+      my @values = split( /,/, $datum->{data}[0]{value} );
+      my ( @values_sorted, @values_idx_sorted );
+      if ( $options->{sort_bin_values} ) {
 				@values_sorted = sort { $b <=> $a } @values;
 				@values_idx_sorted =
 					map  { $_->[0] }
 						sort { $b->[1] <=> $a->[1] }
 							map  { [ $_, $values[$_] ] } ( 0 .. @values - 1 );
-			} else {
+      } else {
 				@values_sorted     = @values;
 				@values_idx_sorted = ( 0 .. @values - 1 );
-			}
+      }
 
-			for my $i ( 0 .. @values - 1 ) {
+      for my $i ( 0 .. @values - 1 ) {
 				# first value has the highest z
 				my $z         = @values - $i;
 				my $cumulsum  = sum( @values_sorted[ 0 .. $i ] );
@@ -332,7 +342,7 @@ sub read_data_file {
 						if ($param eq "fill_color") {
 							@param_values = Circos::color_to_list($value);
 						} else {
-							@param_values = split($COMMA, $value)
+							@param_values = split(/\s*,\s*/,$value)
 						}
 						next unless @param_values;
 						my $param_value = $param_values[ $values_idx_sorted[$i] % @param_values ];
@@ -341,51 +351,73 @@ sub read_data_file {
 					}
 				}
 				push @{$data}, $thisdatum;
-			}
-		} else {
-			push @{$data}, $datum;
-		}
-		$recnum++;
-		if($options->{record_limit} && $recnum >= $options->{record_limit}) {
-			if($type eq "link_twoline") {
+      }
+    } else {
+      push @{$data}, $datum;
+    }
+    $recnum++;
+    if ($options->{record_limit} && $recnum >= $options->{record_limit}) {
+      if ($type eq "link_twoline") {
 				$hide_link_twoline->{$datum->{data}[0]{id}}++;
-			}
-			last;
-		}
-	}
-	stop_timer("io");
-	printdebug_group("io","read",$recnum."/".$linenum,"records/lines");    
-	# for old-style links (defined on two lines), collect the
-	# individual link ends, keyed by the record number, into a single
-	# data structure
-	if($type eq "link_twoline") {
-		my $data_new = [];
-		for my $linkid (sort keys %$data) {
-			next if $hide_link_twoline->{$linkid};
-			my $datum_new;
-			for my $datum (@{$data->{$linkid}}) {
+      }
+      last;
+    }
+  }
+  stop_timer("io");
+  printdebug_group("io","read",$recnum."/".$linenum,"records/lines");    
+  # for old-style links (defined on two lines), collect the
+  # individual link ends, keyed by the record number, into a single
+  # data structure
+  if ($type eq "link_twoline") {
+    my $data_new = [];
+    for my $linkid (sort keys %$data) {
+      next if $hide_link_twoline->{$linkid};
+      my $datum_new;
+      for my $datum (@{$data->{$linkid}}) {
 				push @{$datum_new->{data}}, $datum->{data}[0];
 				for my $param (keys %{$datum->{param}}) {
 					$datum_new->{param}{$param} = $datum->{param}{$param};
 				}
-			}
-			my $num_coords = @{$datum_new->{data}};
-			if($num_coords == 1) {
+      }
+      my $num_coords = @{$datum_new->{data}};
+      if ($num_coords == 1) {
 				fatal_error("links","single_entry",$linkid,$file,Dumper($datum_new));
-			} elsif($num_coords > 2) {
+      } elsif ($num_coords > 2) {
 				fatal_error("links","too_many_entries",$linkid,$file,$num_coords,Dumper($datum_new));
+      }
+      push @$data_new, $datum_new;
+    }
+    $data = $data_new;
+  }
+  # finally parse the params for data points that have been kept
+	start_timer("dataparams");
+	if ($data) {
+		for my $i (0..@$data-1) {
+			my $point = $data->[$i];
+			if ($point->{param}) {
+				#printdumper($point->{param});
+				$point->{param} = Circos::parse_parameters($point->{param},$param_type);
 			}
-			push @$data_new, $datum_new;
+			$point->{param}{i} = $i;
+			if ($type =~ /scatter|heatmap|hist|line/) {
+				if (exists $data->[$i]{data}[0]{value}) {
+					$point->{param}{prev_value} = $i > 0 ? $data->[$i-1]{data}[0]{value} : undef;
+					$point->{param}{next_value} = $i < @$data-1 ? $data->[$i+1]{data}[0]{value} : undef;
+					if(is_number($point->{data}[0]{value},"real",0)
+						 &&
+						 is_number($point->{param}{prev_value},"real",0)
+						 &&
+						 is_number($point->{param}{next_value},"real",0)
+						) {
+						$point->{param}{prev_delta} = $point->{data}[0]{value} - ($point->{param}{prev_value}||0);
+						$point->{param}{next_delta} = ($point->{param}{next_value}||0) - $point->{data}[0]{value};
+					}
+				}
+			}
 		}
-		$data = $data_new;
 	}
-	# finally parse the params for data points that have been kept
-	for my $point (@$data) {
-		if($point->{param}) {
-			$point->{param} = Circos::parse_parameters($point->{param},$param_type);
-		}
-	}
-	return $data;
+	stop_timer("dataparams");
+  return $data;
 }
 
 1;

@@ -74,7 +74,7 @@ sub make_rule_list {
 	# - create a list of parameters that are being readjusted
 	for my $i (0..@rules-1) {
 		my $rule = $rules[$i];
-		if(! defined $rule->{condition} && ! defined $rule->{flow}) {
+		if(! exists $rule->{condition} && ! exists $rule->{flow}) {
 	    $Data::Dumper::Sortkeys = 1;
 	    $Data::Dumper::Terse    = 1;
 	    fatal_error("rule","no_condition_no_flow",Dumper($rule));
@@ -99,7 +99,7 @@ sub apply_rules_to_track {
     my $goto_rule_tag;
     my $have_restarted;
   POINT:
-    for my $point ( @{ $track->{__data} } ) {
+    for my $point ( ref $track eq "HASH" && exists $track->{__data} ? @{ $track->{__data} } : @$track ) {
 		RULE:
 			for my $rule ( @$rules ) {
 				if (defined $goto_rule_tag) {
@@ -111,7 +111,6 @@ sub apply_rules_to_track {
 						$goto_rule_tag = undef;
 					}
 				}
-
 				my $condition = $rule->{condition};
 				my @flows     = make_list(seek_parameter( "flow", $rule, $track->{rules} ));
 				my $pass;
@@ -124,20 +123,19 @@ sub apply_rules_to_track {
 				} else {
 					$pass = test_rule( $point, $condition, [ $point, @$param_path ] ) if defined $condition;
 				}
-
-
+				
 				apply_rule_to_point($point,$rule,$param_path) if $pass;
+				
 				# if flow is not defined
-
 				if (! @flows) {
-					if ($pass) {
-						printdebug_group("rule","quitting rule chain");
-						last RULE;
-					} else {
-						printdebug_group("rule","trying next rule");
-						next RULE;
-					}
+				if ($pass) {
+					printdebug_group("rule","quitting rule chain");
+					last RULE;
 				} else {
+					printdebug_group("rule","trying next rule");
+					next RULE;
+				}
+			} else {
 					for my $flow (@flows) {
 						my @flow_tok = split(" ",$flow);
 						# if the flow string ends with "if true" or "if false" register
@@ -210,45 +208,55 @@ sub apply_rule_to_point {
 	for my $param ( keys %{ $rule->{__param} } ) {
 		my $value = $rule->{$param};
 		printdebug_group("rule","applying rule var",$param,"value",$value);
-
-		if ( $value =~ /^eval\(\s*(.*)\s*\)\s*$/ ) {
-			my $expr = $1;
-			$value = Circos::Expression::eval_expression( $point, $expr, [ $point, @$param_path ] );
+		if ( defined $value ) { #  && $value =~ /^eval\(\s*(.*)\s*\)\s*$/ ) {
+			#my $expr = $1;
+			$value = Circos::Expression::eval_expression($point,$value,[ $point, @$param_path ]);
+			printdebug_group("rule","parsed var",$param,"value",$value);
 		}
-
 		# filters
 		if ( $param eq "minsize") {
 			Circos::DataPoint::apply_filter("minsize",$value,$point);
 		}  else {
 			# parameters
-			if ( $value eq "undef" ) {
-				if ( $param =~ /^(start|end)\d*$/ ) {
+			if ( ! defined $value || $value eq "undef" ) {
+		    if ( $param =~ /^(start|end)\d*$/ ) {
 					fatal_error("rule","cannot_undefine",$param);
-				} else {
-					delete $point->{data}[0]{ $param };
-				}
+		    } else {
+					if($data_field{$param}) {
+						$point->{data}[0]{ $param } = undef;
+					} else {
+						$point->{param}{ $param } = undef;
+					}
+					#delete $point->{data}[0]{ $param };
+		    }
 			} else {
-				my $apply_value = 0;
-				if ( not_defined_or_one( $rule->{overwrite} ) ) {
+		    my $apply_value = 0;
+		    if ( not_defined_or_one( $rule->{overwrite} ) ) {
 					$apply_value = 1;
-				} else {
+		    } else {
 					# do not overwrite - check that param does not exist
 					if($data_field{$param}) {
 						$apply_value = 1 if ! exists $point->{data}[0]{$param};
-					} else {
-						$apply_value = 1 if ! exists $point->{param}{$param};
-					}
+				} else {
+			    $apply_value = 1 if ! exists $point->{param}{$param};
 				}
-				if($apply_value) {
+		    }
+		    if($apply_value) {
 					if($data_field{$param}) {
 						$point->{data}[0]{$param} = $value;
+					} elsif ($param =~ /([12])$/ && 
+									 @{$point->{data}} == 2 &&
+									 $data_field{substr($param,0,-1)}) {
+						my $num = $1;
+						$point->{data}[ $num-1 ]{param}{_modpos} = 1;
+						$point->{data}[ $num-1 ]{ substr($param,0,-1) } = $value;
 					} else {
 						$point->{param}{$param}   = $value;
 					}
-				}
+		    }
 			}
 		}
-		
+
 		# if ( $param eq "value" || $param eq "start" || $param eq "end" ) {
 		# 	if($value eq "undef") {
 		#     delete $point->{data}[0]{ $param };
@@ -277,12 +285,12 @@ sub apply_rule_to_point {
 # -------------------------------------------------------------------
 sub test_rule {
   my ( $point, $condition, $param_path ) = @_;
-	for my $c (make_list($condition)) {
+  for my $c (make_list($condition)) {
 		my $cfmt = Circos::Expression::format_condition($c);
-		my $pass   = Circos::Expression::eval_expression($point,$cfmt,$param_path);
+		my $pass = Circos::Expression::eval_expression($point,$cfmt,$param_path,-force_eval=>1);
 		printdebug_group("rule","condition [$condition] pass",$pass ? "PASS" : "FAIL");
 		return 0 if ! $pass;
-	}
+  }
   return 1;
 }
 

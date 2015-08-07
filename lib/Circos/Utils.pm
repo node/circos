@@ -35,52 +35,62 @@ use warnings;
 
 use base 'Exporter';
 our @EXPORT = qw(
-pairwise_or
+add_thousands_separator
+compare_str 
+compare_strs 
+current_function
+current_package
+defined_and_zero
+exists_parameter 
+extract_number
+false_or_no
+first_defined
+get_file_annotation
+get_hash_leaf
+hide
+is_blank
+is_comment
+is_hidden 
+is_in_list
+is_integer
+is_num_equal
+is_num_notequal
+is_number
+list_has_defined
+list_parameters
+locate_file
+log10
+log2
+make_list
+make_set
+match_string
+not_defined_or_one
 pairwise_and
-round_custom
+pairwise_or
+parse_as_rx
+parse_csv
+parse_options
+put_between
 remap
 remap_int
 remap_round
-str_to_list 
-sample_list 
-match_string
-parse_as_rx
-extract_number
-compare_strs 
-compare_str 
-round_up 
-is_num_equal
-is_num_notequal
-seek_parameter 
-is_hidden 
-not_defined_or_one
-defined_and_zero
-locate_file
-get_file_annotation
-add_thousands_separator
-put_between
-current_function
-current_package
+remap_to_list
 remove_undef_keys
-make_list
-first_defined
-list_has_defined
-is_in_list
-parse_csv
-is_number
-is_integer
-is_blank
-is_comment
-make_set
-span_distance
+replace
+round_custom
+round_up 
+sample_list 
+seek_parameter 
+seek_parameter_glob
 show
-hide
-use_set
+span_distance
+str_to_list 
+strip_quotes
+to_number
+track_r0
+track_r1
 true_or_yes
-false_or_no
-parse_options
-get_hash_leaf
-log10
+use_set
 );
 
 use Carp qw( carp confess croak );
@@ -89,6 +99,7 @@ use FindBin;
 use File::Spec::Functions;
 use Math::Round;
 #use Memoize;
+use List::MoreUtils qw(uniq);
 use Params::Validate qw(:all);
 use Regexp::Common qw(number);
 
@@ -102,6 +113,13 @@ use Circos::Constants;
 use Circos::Debug;
 use Circos::Error;
 
+# -------------------------------------------------------------------
+sub strip_quotes {
+	my $str = shift;
+	$str =~ s/^['"]//;
+	$str =~ s/['"]$//;
+  return $str;
+}
 # -------------------------------------------------------------------
 sub make_list {
   #
@@ -130,10 +148,50 @@ sub round_custom {
 		return ceil $x;
 	}
 }
+
+sub to_number {
+	my $x = shift;
+	if($x =~ /($RE{num}{real})/) {
+		$x = $1;
+	}
+	return $x;
+}
+
 #################################################################
 # 
-sub remap {
+# 0  1  2  3  ...  k  k+1=list_max_idx
+#
+# 0     if  value < min
+# 1..k  if          min <= value <= max
+# k     if                          max < value
 
+#
+sub remap_to_list {
+	my ($value,$min,$max,$base,$list) = @_;
+	return undef if ref($list) ne "ARRAY";
+	my $list_max_idx = @$list-1;
+	my $idx;
+	if($list_max_idx == 0) {
+		$idx = 0;
+	} elsif ($value < $min) {
+		$idx = 0;
+	} elsif ($value >= $max) {
+		$idx = $list_max_idx;
+	} elsif ($list_max_idx == 1) {
+		# if we have only two elements, any value <= max is the first color
+		$idx = 0;
+	} elsif ($list_max_idx == 2) {
+		# if we have three elements, any  min <= value <= max is the middle element
+		$idx = 1;
+	} else {
+		my $value_remap = remap($value,$min,$max,1,$list_max_idx);
+		$value_remap = $value_remap ** (1/$base) if defined $base;
+		$idx = int $value_remap;
+	}
+	return $list->[$idx];
+}
+
+sub remap {
 	my ($value,$min,$max,$remap_min,$remap_max) = @_;
 	if (! defined $value ||
 			! defined $min ||
@@ -183,6 +241,24 @@ sub remap_int {
 
 sub remap_round {
 	return round remap(@_);
+}
+
+sub track_r1 {
+	my ($counter,$t0,$tw,$tp) = @_;
+	my $r1 = sprintf("%fr",$t0+$counter*($tw+$tp)+$tw);
+	#printinfo("r1",$r1);
+	return $r1;
+}
+sub track_r0 {
+	my ($counter,$t0,$tw,$tp) = @_;
+	my $r0 = sprintf("%fr",$t0+$counter*($tw+$tp));
+	#printinfo("r0",$r0);
+	return $r0;
+}
+sub replace {
+	my ($x,$from,$to) = @_;
+	$x =~ s/$from/$to/ig;
+	return $x;
 }
 
 sub str_to_list {
@@ -318,6 +394,7 @@ sub put_between {
 # 
 sub is_number {
 	my ($x,$rxtype,$strict,$min,$max) = @_;
+	return if ! defined $x;
 	$strict = 1 if ! defined $strict;
 	my $pass = 1;
 	eval {
@@ -356,6 +433,27 @@ sub is_comment {
 }
 
 # -------------------------------------------------------------------
+sub seek_parameter_glob {
+  my ( $param_name, $rewrite_rx, @data_structs ) = @_;
+  my @target_string = split( /\|/, $param_name );
+	my @param_rx      = list_parameters(@data_structs);
+	my $params = {};
+	for my $param (@param_rx) {
+		if(grep($param =~ /$_/, @target_string)) {
+			my $value = seek_parameter($param,@data_structs);
+			if(defined $value) {
+				my $param_name = $param;
+				if($rewrite_rx) {
+					$param_name =~ s/$rewrite_rx//;
+				}
+				$params->{$param_name} = $value;
+			}
+		}
+	}
+	return $params;
+}
+
+# -------------------------------------------------------------------
 sub seek_parameter {
   # Given a parameter name and a list of hash references (or list
   # references to hashes), looks for the parameter and returns the
@@ -374,6 +472,7 @@ sub seek_parameter {
   # value of x or y, whichever is seen first is returned
   # seek_parameter("x|y",$hash,$anotherhash);
   my ( $param_name, @data_structs ) = @_;
+	return seek_parameter_glob($param_name, @data_structs) if $param_name =~ /[*]/;
   my @target_string = split( /\|/, $param_name );
 	my $not_def_ok = 1;
   start_timer("parameter_seek");
@@ -386,7 +485,7 @@ sub seek_parameter {
 						stop_timer("parameter_seek");
 						return $substruct->{param}{$str};
 					}
-					if (exists $substruct->{$str}  && ($not_def_ok || defined $substruct->{$str})) {
+					if (exists $substruct->{$str} && ($not_def_ok || defined $substruct->{$str})) {
 						stop_timer("parameter_seek");
 						return $substruct->{$str};
 					}
@@ -404,13 +503,84 @@ sub seek_parameter {
 				}
       } else {
 				printdumper(\@data_structs);
-				croak "cannot extract parameter from this data structure (shown above - report this please)";
+				confess "cannot extract parameter from this data structure (shown above - report this please)";
       }
     }
   }
   stop_timer("parameter_seek");
   return undef;
 }
+
+# -------------------------------------------------------------------
+sub exists_parameter {
+  # Like seek_parameter, but checks whether a parameter exists.
+  my ( $param_name, @data_structs ) = @_;
+  my @target_string = split( /\|/, $param_name );
+  start_timer("parameter_seek");
+  for my $str (@target_string) {
+    for my $struct (@data_structs) {
+      if ( ref($struct) eq "ARRAY" ) {
+				for my $substruct (@$struct) {
+					if (exists $substruct->{param} && exists $substruct->{param}{$str}) {
+						stop_timer("parameter_seek");
+						return 1;
+					}
+					if (exists $substruct->{$str}) {
+						stop_timer("parameter_seek");
+						return 1;
+					}
+				}
+      } elsif ( ref($struct) eq "HASH" ) {
+				if (exists $struct->{param} && exists $struct->{param}{$str}) {
+					stop_timer("parameter_seek");
+					return 1;
+				}
+				if (exists $struct->{$str}) {
+					stop_timer("parameter_seek");
+					return 1;
+				}
+      } else {
+				printdumper(\@data_structs);
+				confess "cannot extract parameter from this data structure (shown above - report this please)";
+      }
+    }
+  }
+  stop_timer("parameter_seek");
+  return 0;
+}
+
+# -------------------------------------------------------------------
+sub list_parameters {
+  # List all populated parameters.
+	#
+  # list_parameters($hash);
+  # list_parameters($hash,$anotherhash);
+  my ( @data_structs ) = @_;
+	my @params = ();
+  start_timer("parameter_seek");
+	for my $struct (@data_structs) {
+		if ( ref($struct) eq "ARRAY" ) {
+			for my $substruct (@$struct) {
+				if (ref $substruct->{param} eq "HASH") {
+					push @params, grep(defined $substruct->{param}{$_}, keys %{$substruct->{param}});
+				}
+				if (ref $substruct eq "HASH") {
+					push @params, grep(defined $substruct->{$_}, keys %$substruct);
+				}
+			}
+		} elsif ( ref($struct) eq "HASH" ) {
+			if (ref $struct->{param} eq "HASH") {
+				push @params, grep(defined $struct->{param}{$_}, keys %{$struct->{param}});
+			}
+			if (ref $struct eq "HASH") {
+				push @params, grep(defined $struct->{$_}, keys %$struct);
+			}
+		}
+	}
+  stop_timer("parameter_seek");
+	return uniq @params;
+}
+
 
 sub is_hidden {
 	my @datapath   = @_;
@@ -439,7 +609,6 @@ sub locate_file {
 		%params = @_;
 	}
 
-	# look for the file in various directories
 	# v0.63 added configuration directory to dir_1
 	my @dir_1 = grep($_,getcwd,Circos::Configuration::fetch_conf("configdir"),$FindBin::RealBin);
 	my @dir_2 = qw(. .. ../.. ../../..);
@@ -448,6 +617,8 @@ sub locate_file {
 	my $file   = $params{file};
 	# remove any comma-delimited elements from the file
 	$file =~ s/,.*//;
+	# remove any trailing rx brackets from file
+	$file =~ s/\(.+?\)$//;
 	printdebug_group("io","locating file",$file,"role",$params{name});
 
 	if (! defined $file) {
@@ -543,10 +714,16 @@ sub current_package {
 }
 
 # -------------------------------------------------------------------
+# Parse a CSV list, respecting brackets and ,'s in values
+#
+# var1=a,var2=rgb(a,b,c),var3=a,b,var4=c
 sub parse_csv {
-	my $str = shift;
+	my $str    = shift;
+	my $delim  = Circos::Configuration::fetch_conf("options_record_delim") || $COMMA;
+	my $assign = Circos::Configuration::fetch_conf("options_field_delim")  || $EQUAL_SIGN;
 	my @elems  = split("",$str);
 	my @params;
+	my $buffer = $EMPTY_STR;
 	my $paren_level;
 	while (scalar @elems) {
 		my $elem = shift @elems;
@@ -554,16 +731,27 @@ sub parse_csv {
 			$paren_level++;
 		} elsif ($elem eq ")") {
 			$paren_level--;
-		} elsif ($elem ne ",") {
-			push @params, "" if ! @params;
-			$params[-1] .= $elem;
-		} elsif ($elem eq ",") {
-			if (! $paren_level) {
-				push @params, "";
+		} elsif ($elem !~ /$delim/i) {
+			$buffer .= $elem;
+		} elsif ($elem =~ /$delim/i) {
+			if (! $paren_level && $buffer =~ /$assign/i) {
+				$buffer =~ s/^$delim//g;
+				push @params, $buffer;
+				$buffer = $elem;
+			} elsif ($buffer !~ /$assign/i) {
+				$params[-1] .= $buffer;
+				$buffer      = $elem;
 			} else {
-				push @params, "" if ! @params;
-				$params[-1] .= $elem;
+				$buffer .= $elem;
 			}
+		}
+	}
+	if($buffer ne $EMPTY_STR) {
+		if($buffer =~ /$assign/i) {
+			$buffer =~ s/^$delim//g;
+			push @params, $buffer if $buffer ne $EMPTY_STR;
+		} else {
+			$params[-1] .= $buffer;
 		}
 	}
 	if ($paren_level) {
@@ -695,18 +883,35 @@ sub get_hash_leaf {
 sub parse_options {
   my $string  = shift || $EMPTY_STR;
   my $options = {};
-  my @option_pairs = split(/,/,$string);
-  for my $option_pair ( @option_pairs ) {
-    if ($option_pair =~ /^([^=]+)=(.+)$/) {
-      $options->{$1} = $2;
-    }
-  }
+	my @option_pairs;
+	if ($string =~ /,[^=]*,/ || $string =~ /[()]/) {
+		# use the slower parser only when we know the options field includes brackets
+		# color=(255,0,0),x=1 -> color=(255,0,0) x=1
+		# or adjacent commas 
+		@option_pairs = parse_csv($string);
+	} else {
+		@option_pairs = split(",",$string);
+	}
+	my %params;
+	#printdumper(\@option_pairs);
+	for my $option_pair ( @option_pairs ) {
+		if ($option_pair =~ /^([^=]+)=(.+)$/) {
+			$options->{$1} = $2;
+		} else {
+			fatal_error("parsedata","bad_options",$option_pair);
+		}
+	}
   return $options;
 }
 
 sub log10 {
 	my $x = shift;
 	return $x > 0 ? log($x)/log(10) : undef;
+}
+
+sub log2 {
+	my $x = shift;
+	return $x > 0 ? log($x)/log(2) : undef;
 }
 
 1;

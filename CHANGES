@@ -402,10 +402,10 @@ Configuration file location is now guessed if guess_conf_location=yes (see etc/h
 
 Color file cache can now be static (color_cache_static) and dir/file can be changed (color_cache_{file,dir})
 
-Added 'placed' and 'not_placed' output for labels in text tracks to. Use -debug_group text to see this.
+Added 'placed' and 'not_placed' output for labels in text tracks to. Use -debug_group textplace to see this.
 
    # create data file of labels that were not placed
-   circos -conf ... -debug_group text | grep not_placed > text.notplaced.txt
+   circos -conf ... -debug_group textplace | grep not_placed > text.notplaced.txt
 
 Parts of the code were made faster (unit checking) through Memoize.
 
@@ -918,3 +918,283 @@ Added alert when too many ideograms, ticks, links, or data points were being dra
   max_points_per_track = 25000
 
 Fixed a bug in which configuration parameters with multiple instances (e.g. condition in rules) weren't parsed correctly for keywords like conf().
+
+14 May 2013 v0.65
+
+Counter parameters can now have multiple instances in <plot>, <link> and <highlight> blocks
+
+  <plot>
+  init_counter = thickness:0
+  init_counter = fill:0
+  ...
+  post_increment_counter = thickness:0.5
+  post_increment_counter = fill:2
+  ...
+  </plot>
+
+pre_increment_counter and post_increment_counter can be used without a counter name, in which case the counter defaults to the block type. This value will be used for each subsequent block, until it is redefined.
+
+  <plot>
+  post_increment_counter = 2 # plot counter incremented by 2 after block is parsed
+  ... 
+  </plot>
+
+The default location of the output file has been changed from the current directory to the configuration file directory. To change this default, see etc/image.generic.conf, which is included from etc/image.conf.
+
+  # old
+  dir = .
+  # new
+  dir = conf(configdir)
+
+Data points that extend past the end of their ideogram view range can now be trimmed or hidden, along with optional warnings (fatal or not). See the data_out_of_range parameter in etc/housekeeping.conf. The default is trim,warn.
+
+A <plot> block no longer requires a file parameter. It can be used for drawing axes and/or backgrounds, without any data.
+
+The fonts/symbols/symbols.otf font how includes hollow glyphs, encoded by lower case letters. Solid glyphs have been moved to upper case.
+
+  small
+  | medium
+  | | large
+  | | |
+  a b c   square
+  d e f   rhombus
+  g h i   triangle up
+  j k l   triangle down
+  m n o   circle
+
+  upper case - solid
+  lower case - hollow
+
+Tick multiplier, spacing and position now supports K, M, G and T suffixes (case-insensitive), with an optional trailing "b" (e.g. Kb). Arithmetic (e.g. division) is supported in these values
+
+  multiplier = 1/1Mb         # 1e-6
+  spacing    = 5Mb           # 5000000
+  position   = 5kb,10kb,15kb # 5000,10000,25000
+
+Most data SVG elements can now have attributes for their SVG tags by adding svg* parameters to the data point track. Any parameter that starts with svg (e.g. svgNNN) will be turned into an attribute whose name is derived from the parameter by stripping the leading "svg" out (e.g. NNNN). (e.g. svgid -> id, svgclass -> class).
+
+ hs1 100 200 0.5 svgid=123,svgclass=abc  ->  <circle ... id="123" class="abc"/>
+
+Ideograms now accept SVG attributes using svg* parameters in <ideogram> block. These can be eval()'ed
+
+  <ideogram>
+  ...
+  svgclass = eval(var(chr))
+  svgid    = eval(sprintf("chrid%s",var(label)))
+  
+
+Added file_rx field to parse only lines from track file that match this regular expression
+
+  file = data.txt
+  file_rx = id=100$
+
+Fixed a bug that was incorrectly filling under line plots when angle_orientation = counterclockwise.
+
+16 April 2014 v0.67-pre0
+
+Histograms and heatmaps now accept 'pattern' parameter.
+
+Heatmap color encoding now accepts 'color_mapping' parameter (0,1,2) that defines how colors are mapped onto the range of values.
+
+   encodings: 0,1,2,3,...,n,n+1
+
+   method       min             max
+       0,1      0|0 1 2 ... n n+1|n+1
+         0      0|001122...445577|7       [min,max] divided uniformly
+         1      0|01122...4455667|7       division at edges 1/2 of others
+         2      0|1  2  ... n-1 n|n+1     divided uniformly, 0,n+1 encode data extremes 
+
+Heatmap pattern encoding accepts analogous 'pattern_mapping' (0,1,2).
+
+Added 'legend' debug group to report color mapping legend for each heatmap.
+
+  -debug_group legend
+  debuggroup legend 3.61s track_0  -inf 0.000   inf 0 black 0,0,0
+  debuggroup legend 3.61s tracko_0 0.000 1.000 1.000 0 black 0,0,0
+  debuggroup legend 3.61s track_0 1.000 2.000 1.000 1 spectral-8-div-1 213,62,79
+  debuggroup legend 3.61s track_0 2.000 3.000 1.000 2 spectral-8-div-2 244,109,67
+  debuggroup legend 3.61s track_0 3.000 4.000 1.000 3 spectral-8-div-3 253,174,97
+  debuggroup legend 3.61s track_0 4.000 5.000 1.000 4 spectral-8-div-4 254,224,139
+  debuggroup legend 3.61s track_0 5.000 6.000 1.000 5 spectral-8-div-5 230,245,152
+  debuggroup legend 3.61s track_0 6.000 7.000 1.000 6 spectral-8-div-6 171,221,164
+  debuggroup legend 3.61s track_0 7.000 8.000 1.000 7 spectral-8-div-7 102,194,165
+  debuggroup legend 3.61s track_0 8.000 9.000 1.000 8 spectral-8-div-8 50,136,189
+  debuggroup legend 3.61s track_0 9.000 10.000 1.000 9 grey 150,150,150
+  debuggroup legend 3.61s track_0 10.000  +inf   inf 9 grey 150,150,150
+
+2 May 2014 v0.67-pre3
+
+Fixed a bug that was preventing
+
+  param = undef
+
+from being recognized. This was incorrectly being replaced by the default value of the parameter, making it difficult to remove the effect of the default (e.g. fill color on glyphs).
+
+The default output image directory is now . (current directory), not the configuration file directory. To change this back, edit etc/image.generic.conf.
+
+Added -modules flag so that now modules can be tested using the circos binary.
+
+  circos -modules
+
+When Circos is run and modules are missing, a list of all missing modules is shown. Previously Circos exited at the first module.
+
+Fixed a bug that was incorrectly parsing <link> blocks that had no parameters (all inherited from <links> block) but had a <rules> block.
+
+Fixed a bug that was incorrectly parsing comma-delimited parameters for stacked histograms. The values were being split on commas but did not allow for a space around the comma.
+
+Rules can now access track statistics via var(plot_STAT) where STAT is one of
+
+  min, max, average (also avg, mean), sd, var, n
+
+Rules can now access additional data point properties with var(FIELD) where FIELD is one of
+  
+  i prev_value next_value prev_delta next_delta
+
+Updated Brewer palette file. Removed -LETTER colors (e.g. reds-3-seq-a). These never seemed to be used. Added integrated 13-color and 15-color palettes for all sequential and diverging palettes, which are composed of all the colors from which the n-color palettes are sampled.
+
+3 Jun 2014 v0.67-pre4
+
+Fixed bug with heatmap boundaries.
+
+13 Jun 2014 v0.67-pre5
+
+Fixed a bug that was interfering with color allocation when a background image was used.
+
+21 Aug 2014 v0.67-pre6
+
+Added pattern fill support in SVG files. SVG patterns are defined in etc/patterns.svg.conf.
+
+If the path to the parameter set using -param refers to multiple blocks, then this parameter is set in all the blocks. For example,
+
+  -param plots/plot/a=1
+
+will set a=1 in each <plot> block
+
+8 Sep 2014 v0.67-pre7
+
+Coordinates in data and karyotype files can now have thousands separators , and _
+
+HEX color format (AABBCC) can now be used anywhere a color name is used. Do not use # in front of the color name.
+
+Options now allow for ,'s within option values. 
+
+  x=1,y=(2,3),z=a,b,c=5
+
+will be parsed as x=1 y=2,3 z=a,b c=5
+
+Added options_record_delim and options_field_delim for delimiters for option lists in data files.
+
+Options lists now use both , and ; as a delimiter. This can be changed with options_record_delim in etc/housekeeping.conf
+
+Tiles, highlights and connector tracks can now use data files that contain values to make them compatible with data files for track types like scatter plots and text tracks. The requirement that values be numbers has been removed -- any string is now acceptable, but numbers are still required if you're using tracks that require numbers (e.g. histogram, scatter, heatmap etc).
+
+Fixed a roundoff bug for track axes that was preventing the last axis grid from being drawn.
+
+Axes now have default settings defined in etc/tracks/axis.conf
+
+Scatter and tile tracks now behave just like heatmaps. The value of for each tile will be encoded by a color if the color definition is a color list.
+
+Tile tracks now use 'sort' and 'sort_direction' field to determine the order in which tiles are placed in layers. 
+
+  sort = value | size
+  sort_direction = ascending | descending
+
+Colors can now be specified in LCH space using lch(l,c,h). This is the perceptually uniform version of hsv.
+
+The -cdump option now accepts both , and / as delimiter for block paths
+
+  -conf ideogram/spacing
+  -conf ideogram,spacing
+
+The -cdump option now accepts a regexp after the block path to filter the elements reported
+
+  -conf ideogram:fill
+  -conf colors:reds
+  -conf :default
+
+The flags -dir and -file can now be used instead of -outputdir and -outputfile. The -file and -outputfile flags now can contain paths. The following are equivalent
+
+  -file etc/circos.png 
+  -dir etc -file circos.png
+
+If the output directory does not exist, a fatal error is produced.
+
+The -time flag now reports timing information. This is a shortcut to -debug_flag +timer
+
+8 Sep 2014 v0.67-pre7
+
+C-style comments /* ... */ are no longer supported in the
+configuration file. The reason for this is that regular expressions
+like /.*/ interfere with parsing. Instead, use "#" for comments
+
+Using -debug_group without an argument lists the supported groups.
+
+Module check at the beginning now reports the module loading error. It should be clear when a module is out-of-date.
+
+1 Oct 2014 v0.67
+
+Added auto_eval in etc/housekeeping.conf to allow automatic evaluation of all parameter values in rules.
+
+Using var(?) anywhere in the config file will dump a list of available parameters.
+
+Fixed a bug with highlights that was drawing them multiple times for cropped ideogram regions from the same chromosome.
+
+<highlight> blocks can now have <rules>
+
+<ideogram> block can now have rules that apply formatting to each ideogram
+
+Fixed a bug that was not drawing ticks when show_label=no.
+
+6 Oct 2014 v0.67-1
+
+Fixed cases that were producing warnings with newer versions of Perl.
+
+14 Nov 2014 v0.67-1
+
+Fixed bug with tick positions "start" and "end" not showing up on different cropped regions of the same chromosome.
+
+Fixed bug for regular expression checks in chromosomes_color
+
+18 Nov 2014 v0.67-2
+
+Fixed a tick bug introduced in v0.67-1.
+
+25 Nov 2014 v0.67-3
+
+To draw all axis breaks of style 2 as double lines (including start/end breaks) use
+
+ <style>
+ ...
+ double_line = yes 
+ </style>
+
+Added karyotype for GRCh38/hg39 (Dec 2013) human assembly, as data/karyotype/karyotype.human.hg38.txt.
+
+27 Nov 2014 v0.67-4
+
+Ideograms can now be filled with a pattern. In <ideogram> use
+
+  fill_pattern = checker
+
+19 Jan 2015 v0.67-5
+
+Added arrows to symbols font.
+
+Fixed bug that was making Circos look for a file named after the 'background' parameter in <image>.
+
+Fixed bug with ideogram rules and labels. Now ideogram_label can be altered by a rule.
+
+27 Feb 2015 v0.67-6
+
+Experimental support for superscripts and subscripts in SVG output. 
+
+  a_i
+  a_{ijk}
+  a^2
+  a^{234}
+
+Baseline and font size shifts are defined in etc/housekeeping.conf using sub_baseline_shift and sub_fontsize and analogous for sup_*.
+
+16 Mar 2015 v0.67-7
+
+Fixed a color bug that was ignoring transparency values in color definitions in data files.

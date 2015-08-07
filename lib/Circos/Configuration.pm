@@ -40,6 +40,8 @@ our @EXPORT    = qw(
 										 fetch_conf
 										 get_counter
 										 exists_counter
+										 dump_config
+parse_conf_fn
 										 %CONF
 										 $DIMS
 									);
@@ -69,6 +71,7 @@ use Circos::Error;
 our %CONF;
 our $DIMS;
 
+our $COUNTER;
 
 # -------------------------------------------------------------------
 # Return the configuration hash leaf for a parameter path.
@@ -81,19 +84,19 @@ our $DIMS;
 #
 # If the leaf, or any of its parents, do not exist, undef is returned.
 sub fetch_configuration {
-	my @config_path = @_;
-	my $node        = \%CONF;
-	if(! @config_path) {
-		return \%CONF;
-	}
-	for my $path_element (@config_path) {
-		if (! exists $node->{$path_element}) {
+    my @config_path = @_;
+    my $node        = \%CONF;
+    if(! @config_path) {
+	return \%CONF;
+    }
+    for my $path_element (@config_path) {
+	if (! exists $node->{$path_element}) {
 	    return undef;
-		} else {
+	} else {
 	    $node = $node->{$path_element};
-		}
 	}
-	return $node;
+    }
+    return $node;
 }
 
 sub fetch_conf {
@@ -106,6 +109,37 @@ sub fetch_parameter_list_item {
 	my ($list,$item,$delim) = @_;
 	my $parameter_hash = make_parameter_list_hash($list,$delim);
 	return $parameter_hash->{$item};
+}
+
+sub dump_config {
+	my %OPT = @_;
+	$Data::Dumper::Indent    = 2;
+	$Data::Dumper::Quotekeys = 0;
+	$Data::Dumper::Terse     = 0;
+	$Data::Dumper::Sortkeys  = 1;
+	$Data::Dumper::Varname   = "CONF";
+	if ($OPT{cdump}) {
+		my ($path,$rx) = split(":",$OPT{cdump});
+		my @path       = split(/[.\/]/,$path);
+		if($rx) {
+			$Data::Dumper::Varname .= join(":",join("_",@path),$rx);
+			$Data::Dumper::Sortkeys = sub { 
+				my ($h) = @_;
+				return [sort grep($_ =~ /$rx/, keys %$h)];
+			}
+		} else {
+			$Data::Dumper::Varname .= join("_",@path);
+		}
+		if(@path) {
+			printdumper(get_hash_leaf(\%CONF,@path));
+		} else {
+			printdumper(\%CONF);
+		}
+	} else {
+
+		printdumper(\%CONF);
+	}
+	exit
 }
 
 # -------------------------------------------------------------------
@@ -209,14 +243,22 @@ sub populateconfiguration {
 						if(exists $leaf->{$path}) {
 							if(ref $leaf->{$path} eq "HASH") {
 								$leaf = $leaf->{$path};
+							} elsif (ref $leaf->{$path} eq "ARRAY") {
+								$leaf = $leaf->{$path};
 							} else {
-							fatal_error("configuration","parampath_missing",$param,$value,$path);
+								fatal_error("configuration","parampath_missing",$param,$value,$path);
 							}
 						} else {
 							fatal_error("configuration","parampath_nothash",$param,$value,$path);
 						}
 					}
-					$leaf->{ $param_path[-1] } = $value;
+					if(ref $leaf eq "HASH") {
+						$leaf->{ $param_path[-1] } = $value;
+					} elsif (ref $leaf eq "ARRAY") {
+						for my $l (@$leaf) {
+							$l->{ $param_path[-1] } = $value;
+						}
+					}
 				}
 			} else {
 	      $CONF{$key} = $OPT{$key};
@@ -235,7 +277,7 @@ sub populateconfiguration {
 	merge_top_hashes( \%CONF );
   resolve_synonyms( \%CONF, [] );
 
-	# Fields like conf(key1,key2,...) are replaced by $CONF{key1}{key2}
+  # Fields like conf(key1,key2,...) are replaced by $CONF{key1}{key2}
   #
   # If you want to perform arithmetic, you'll need to use eval()
   #
@@ -245,15 +287,16 @@ sub populateconfiguration {
   #
   # flag = 10
   # note = eval(2*conf(flag))
-  repopulateconfiguration( \%CONF );
+  repopulateconfiguration( \%CONF, undef, undef, undef, 1 );
+  repopulateconfiguration( \%CONF, undef, undef, undef, 0 );
 
   override_values( \%CONF );
   check_multivalues( \%CONF, undef );
 
-	postprocess_values(\%CONF);
+  postprocess_values(\%CONF);
 
-	fatal_error("configuration","no_housekeeping") if ! $CONF{housekeeping};
-
+  fatal_error("configuration","no_housekeeping") if ! $CONF{housekeeping};
+  
 }
 
 #-------------------------------------------------------------------
@@ -367,8 +410,9 @@ sub merge_top_hashes {
 						radius     => { pass => qr/tick/ },
 						axis       => { pass => qr/axes/ },
             param      => { pass => qr/_root/},
+						post_increment_counter => { pass => qr/plot/ },
 					 };
-	
+
 	sub check_multivalues {
 		my ($root,$root_name,$level) = @_;
 
@@ -401,7 +445,6 @@ sub merge_top_hashes {
 	    }
 			#printinfo($level,$key,$value);
 		}
-
 		for my $key (keys %$root) {
 	    my $value = $root->{$key};
 	    if (ref $value eq "HASH" ) {
@@ -429,6 +472,7 @@ sub postprocess_values {
 	    } else {
 				#printinfo("conf_iterate","value",$key,$value);
 				if($value =~ /undef/i) {
+					#delete $node->{$key};
 					$node->{$key} = undef;
 				}
 			}
@@ -458,17 +502,35 @@ sub conf_iterate {
 }
 
 sub set_counters {
-	my ($node,@paramfn) = @_;
+	my ($node,$parent_node_name,$parent_node,@paramfn) = @_;
 	my %set_counter_names;
 	for my $paramfn (@paramfn) {
 		my ($param,$fn) = @{$paramfn}{qw(param fn)};
-		if (my $value = $node->{$param}) {
-	    for my $counter_txt (split(",",$value)) {
-				my ($counter,$incr) = split(":",$counter_txt);
+		next if ! defined $node->{$param};
+		my @values      = make_list($node->{$param});
+		for my $value (grep(defined $_,@values)) {
+			for my $counter_txt (split(",",$value)) {
+				my ($counter,$incr);
+				if($counter_txt =~ /:/) {
+					($counter,$incr) = split(":",$counter_txt);
+				} else {
+					$counter = $parent_node_name;
+					$incr    = $counter_txt;
+				}
+				#printinfo($node,$parent_node_name,$counter,$incr);
 				$fn->($counter,$incr);
 				$set_counter_names{$counter}++;
-	    }
-		}	
+
+				# also increment counter of the node's type
+
+				if($parent_node_name eq "plot" && 
+					 ($node->{type} || ($parent_node && $parent_node->{type}))) {
+					my $counter_name = $node->{type} || $parent_node->{type};
+					$fn->( $counter_name, $incr );
+					$set_counter_names{ $counter_name }++;
+				}
+			}
+		}
 	}
 	return %set_counter_names;
 }
@@ -500,113 +562,114 @@ sub clone_merge {
 
 # -------------------------------------------------------------------
 sub repopulateconfiguration {
-  my ($node,$parent_node_name) = @_;
+  my ($node,$parent_node_name,$parent_node,$curr,$do_counter) = @_;
 
-  my %set_counter_names = set_counters(
+  # compile current view of configuration paramters, respecting hierarchy
+  $curr ||= {};
+  $curr = { %$curr, %$node };
+
+	my %set_counter_names = set_counters(
 																			 $node,
+																			 $parent_node_name,
+																			 $parent_node,
 																			 { param=>"init_counter",				   fn=>\&init_counter 	   },
 																			 { param=>"pre_increment_counter", fn=>\&increment_counter },
 																			 { param=>"pre_set_counter",       fn=>\&set_counter       },
-																			);
+																			) if $do_counter;
 
-  # default initializer, if init_counter was not called
-	if (ref $node && defined $parent_node_name) {
-		init_counter($parent_node_name,0) if ! $set_counter_names{$parent_node_name};
+	if($do_counter) {
+		# default initializer, if init_counter was not called
+		if (ref $node && defined $parent_node_name) {
+			init_counter($parent_node_name,0) if ! $set_counter_names{$parent_node_name};
+			if($parent_node_name eq "plot" &&
+				 ($node->{type} || ($parent_node && $parent_node->{type}))) {
+				my $counter_name = $node->{type} || $parent_node->{type};
+				init_counter($counter_name,0) if ! $set_counter_names{$counter_name};
+			}
+		}
 	}
-	
-  for my $key ( keys %$node ) {
+
+  for my $key ( sort keys %$node ) {
 		my $value = $node->{$key};
 		if ( ref $value eq 'HASH' ) {
-			repopulateconfiguration($value,$key);
+			repopulateconfiguration($value,$key,$node,$curr,$do_counter);
 		} elsif ( ref $value eq 'ARRAY' ) {
 			for my $i (0..@$value-1) {
 				my $item = $value->[$i];
 				#printinfo($i,$key,$item);
 				if ( ref $item ) {
-					repopulateconfiguration($item,$key);
+					repopulateconfiguration($item,$key,$node,$curr,$do_counter);
 				} else {
-					my $new_value     = parse_field($item,$key,$parent_node_name,$node);
+					my $new_value     = parse_field($item,$key,$parent_node_name,$node,$curr);
 					$node->{$key}[$i] = $new_value;
 				}
 				#printinfo($i,$key,$node->{$key}[$i]);
 			}
 		} else {
-			if ($key =~ /\s+/) {
+			# excluding the counter key is required because blocks like
+			# <pairwise /hs/ /hs/ >
+			# will trigger the multi_word_key error
+			if ($key =~ /\s+/ && $parent_node_name ne "counter") { 
 	      fatal_error("configuration","multi_word_key",$key);
       } else {
-				my $new_value = parse_field($value,$key,$parent_node_name,$node);
+				my $new_value = parse_field($value,$key,$parent_node_name,$node,$curr);
 				$node->{$key} = $new_value;
 			}
     }
   }
 
-  %set_counter_names = set_counters(
-																		$node,
-																		{ param=>"post_increment_counter", fn=>\&increment_counter },
-																		{ param=>"post_set_counter",       fn=>\&set_counter       },
-																	 );
+	if($do_counter) {
+		%set_counter_names = set_counters(
+																			$node,
+																			$parent_node_name,
+																			$parent_node,
+																			{ param=>"post_increment_counter", fn=>\&increment_counter },
+																			{ param=>"post_set_counter",       fn=>\&set_counter       },
+																		 );
 
   # default post increment counter
-	if (ref $node && defined $parent_node_name) {
-		increment_counter($parent_node_name,1) if ! $set_counter_names{$parent_node_name};
+		if (ref $node && defined $parent_node_name) {
+			my $default_increment = defined $COUNTER->{$parent_node_name}{increment} ? $COUNTER->{$parent_node_name}{increment} : 1;
+			if($parent_node_name eq "plot" &&
+				 ($node->{type} || ($parent_node && $parent_node->{type}))) {
+				my $counter_name = $node->{type} || $parent_node->{type};
+				increment_counter($counter_name,$default_increment) if ! $set_counter_names{$counter_name};
+			}
+			increment_counter($parent_node_name,$default_increment) if ! $set_counter_names{$parent_node_name};
+		}
 	}
-
 }
 
 sub parse_field {
 
-	my ($str,$key,$parent_node_name,$node) = @_;
+	my ($str,$key,$parent_node_name,$node,$curr) = @_;
 	my $delim    = "__";
+
+	if(! defined $str) {
+		printdumper($node); 
+		fatal_error("configuration","undefined_string",$key,$parent_node_name || "_root");
+	}
 
 	# replace counters
 	# counter(NAME)
-	#printinfo($str);
 	while ( $str =~ /(counter\(\s*(.+?)\s*\))/g ) {
 		my ($template,$counter) = ($1,$2);
 		if (defined $template && defined $counter) {
-			my $new_template = get_counter($counter);
-			printdebug_group("counter","fetch",$template,$counter,$new_template);
-			$str =~ s/\Q$template\E/$new_template/g;
+		    my $new_template = get_counter($counter);
+		    printdebug_group("counter","fetch",$template,$counter,$new_template);
+		    $str =~ s/\Q$template\E/$new_template/g;
 		}
 	}
 
 	# replace configuration field
 	# conf(LEAF,LEAF,...)
-	my $redo;
-	while( ! defined $redo || $redo) {
-		$redo = 0;
-		while ( $str =~ /(conf\(\s*([^\(\)]+?)\s*\))/g ) {
-			my ($template,$leaf) = ($1,$2);
-			if($leaf =~ /conf\(/) {
-				$redo = 1;
-				next;
-			}
-			if (defined $template && defined $leaf) {
-				my @leaf  = split(/\s*,\s*/,$leaf);
-				my $new_template;
-				if (@leaf == 2 && $leaf[0] eq ".") {
-					$new_template = $node->{$leaf[1]};
-				} else {
-					$new_template = fetch_conf(@leaf);
-				}
-				if(! defined $new_template) {
-					fatal_error("configuration","no_such_conf_item",$template,$leaf);
-				}
-				printdebug_group("conf","fetch",$template,join(",",@leaf),$new_template);
-				$str =~ s/\Q$template\E/$new_template/g;
-			}
-		}
-	}
+	$str = parse_conf_fn($str,$node,$curr);
 
 	# this is going to be deprecated
-	while ( $str =~ /$delim([^_].+?)$delim/g ) {
-		my $source = $delim . $1 . $delim;
-		my $target = eval $1;
-		printdebug_group("conf","repopulate","key",$key,"value",$str,"var",$1,"target",$target);
-		$str =~ s/\Q$source\E/$target/g;
-		printdebug_group("conf","repopulate",$key,$str,$target);
+	if( $str =~ /$delim([^_].+?)$delim/g ) {
+		fatal_error("configuration","deprecated","__FIELD__","var(FIELD)");
 	}
-
+	
 	$str = eval_conf($str) if $str !~ /var\s*\(/ && (! defined $parent_node_name || $parent_node_name ne "rule");
 
 	#$redo = undef;
@@ -628,6 +691,48 @@ sub parse_field {
 	#	}
 	#}
 
+	return $str;
+}
+
+sub parse_conf_fn {
+	my ($str,$node,$curr) = @_;
+	my $redo;
+	while( ! defined $redo || $redo) {
+		$redo = 0;
+		while ( $str =~ /((opt)?conf\(\s*([^\(\)]+?)\s*\))/g ) {
+	    my ($template,$checkonly,$leaf) = ($1,$2,$3);
+	    if($leaf =~ /conf\(/) {
+				$redo = 1;
+				next;
+	    }
+	    if (defined $template && defined $leaf) {
+				my @leaf  = split(/\s*,\s*/,$leaf);
+				my $new_template;
+				if (@leaf == 2 && $leaf[0] eq ".") {
+					if(defined $curr && exists $curr->{$leaf[1]}) {
+						$new_template = $curr->{$leaf[1]};
+					} else {
+						$new_template = $node->{$leaf[1]};
+					}
+				} else {
+					$new_template = fetch_conf(@leaf);
+				}
+				if(! defined $new_template && ! $checkonly) {
+					fatal_error("configuration","no_such_conf_item",$template,$leaf);
+				}
+				printdebug_group("conf","fetch",$template,join(",",@leaf),$new_template);
+				if(defined $new_template) {
+					if($new_template =~ /(var|eval)\(/) {
+
+					} else {
+						$str =~ s/\Q$template\E/$new_template/g;
+					}
+				} else {
+					$str =~ s/\Q$template\E/undef/g;
+				}
+			}
+		}
+	}
 	return $str;
 }
 
@@ -709,6 +814,8 @@ sub loadconfiguration {
 																 -AllowMultiOptions => 1,
 																 -LowerCaseNames    => 1,
 																 -IncludeAgain      => 1,
+																 -CComments         => 0,
+																 -NormalizeBlock    => sub { my $x = shift; $x =~ s/\s*$//; $x; },
 																 -ConfigPath        => \@configpath,
 																 -AutoTrue => 1
 																);
@@ -730,16 +837,18 @@ sub loadconfiguration {
 # -------------------------------------------------------------------
 sub validateconfiguration {
 
-	if ($CONF{debug} && ! $CONF{debug_group}) {
-		$CONF{debug_group} = "summary,io,timer";
-	}
-
 	$CONF{chromosomes_display_default} = 1 if ! defined $CONF{chromosomes_display_default};
 	$CONF{chromosomes_units} ||= 1;
 	$CONF{svg_font_scale}    ||= 1;
 
 	if ( ! $CONF{karyotype} ) {
 		fatal_error("configuration","no_karyotype");
+	}
+
+	for my $block (qw(ideogram image colors fonts)) {
+		if ( ! $CONF{$block} ) {
+			fatal_error("configuration","no_block",$block);
+		}
 	}
 
 	$CONF{image}{image_map_name} ||= $CONF{image_map_name};
@@ -749,11 +858,15 @@ sub validateconfiguration {
 	$CONF{image}{"24bit"} = 1;
 	$CONF{image}{png}  = $CONF{png} if exists $CONF{png};
 	$CONF{image}{svg}  = $CONF{svg} if exists $CONF{svg};
-	$CONF{image}{file} = $CONF{outputfile} if $CONF{outputfile};
-	$CONF{image}{dir}  = $CONF{outputdir}  if $CONF{outputdir};
+	if(my $file = $CONF{outputfile} || $CONF{file}) {
+		$CONF{image}{file} = $file;
+	}
+	if(my $dir = $CONF{outputdir} || $CONF{dir}) {
+		$CONF{image}{dir} = $dir;
+	}
 	$CONF{image}{background} = $CONF{background} if $CONF{background};
 
-	if ( $CONF{image}{angle_offset} > 0 ) {
+	while($CONF{image}{angle_offset} > 0 ) {
 		$CONF{image}{angle_offset} -= 360;
 	}
 
@@ -761,8 +874,8 @@ sub validateconfiguration {
 	# Make sure these fields are initialized
 	#
 
-	for my $fld ( qw(chromosomes chromosomes_breaks chromosomes_radius) ) {
-		$CONF{ $fld } = $EMPTY_STR if !defined $CONF{ $fld };
+	for my $f ( qw(chromosomes chromosomes_breaks chromosomes_radius) ) {
+		$CONF{ $f } = $EMPTY_STR if ! defined $CONF{ $f };
 	}
 
 }
@@ -792,7 +905,8 @@ sub increment_counter {
   my ($counter,$value) = @_;
   init_counter($counter,0);
 	if (defined $value) {
-		$CONF{counter}{$counter} += $value;
+		$COUNTER->{$counter}{increment}  = $value;
+		$CONF{counter}{$counter}        += $value;
 		printdebug_group("counter","incrementing counter",$counter,$value,"now",get_counter($counter));
 	}
 }
@@ -812,9 +926,9 @@ sub set_counter {
 		if (! $seen{$counter}++) {
 			if (defined $value) {
 				$CONF{counter}{$counter} = $value;
+				printdebug_group("counter","init counter",$counter,"with value",$value,"new value",get_counter($counter));
 			}
 		}
-		printdebug_group("counter","init counter",$counter,"with value",$value,"new value",get_counter($counter));
 	}
 }
 

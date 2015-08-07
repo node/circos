@@ -34,7 +34,16 @@ use strict;
 use warnings;
 
 use base 'Exporter';
-our @EXPORT = qw(unit_fetch unit_validate unit_split unit_strip unit_test unit_convert unit_parse);
+our @EXPORT = qw(
+unit_fetch
+unit_validate
+unit_split
+unit_strip
+unit_test
+unit_convert
+unit_parse
+parse_suffixed_number
+);
 
 use Carp qw( carp confess croak );
 use FindBin;
@@ -248,6 +257,7 @@ sub unit_parse {
     # 2. the string "dims(a,b)" for some parameters a,b
     
     start_timer("unitparse");
+
     my $expression = shift;
     my $ideogram   = shift;
     my $side       = shift;
@@ -292,45 +302,70 @@ sub unit_parse {
     }
     
     while ( $expression =~ /([\d\.]+[$CONF{units_ok}])/g ) {
-	my $string = $1;
-	my ( $value, $unit ) = unit_split($string);
-	my $value_converted;
-	
-	if ( $unit eq "u" ) {
-	    
-	    # convert from chromosome units to bases
-	    $value_converted = unit_convert(
-		from    => $string,
-		to      => "b",
-		factors => { ub => $CONF{chromosomes_units} }
-		);
-	} else {
-	    
-	    # convert from relative or pixel to pixel
-	    my $rpfactor;
-	    my $tag = $ideogram ? $ideogram->{tag} : "default";
-	    #printdumper($ideogram) if $ideogram->{chr} eq "hs1";
-	    if ( $value < 1 ) {
-		$rpfactor = $relative
-		    || $DIMS->{ideogram}{$tag}{ $radius_flag || "radius_inner" };
-	    } else {
-		$rpfactor = $relative
-		    || $DIMS->{ideogram}{$tag}{ $radius_flag || "radius_outer" };
-	    }
-	    $value_converted = unit_convert(
-		from    => $string,
-		to      => "p",
-		factors => { rp => $rpfactor }
-		);
+
+			my $string = $1;
+			my ( $value, $unit ) = unit_split($string);
+			my $value_converted;
+			
+			if ( $unit eq "u" ) {
+				
+				# convert from chromosome units to bases
+				$value_converted = unit_convert(
+																				from    => $string,
+																				to      => "b",
+																				factors => { ub => $CONF{chromosomes_units} }
+																			 );
+			} else {
+				
+				# convert from relative or pixel to pixel
+				my $rpfactor;
+				my $tag = $ideogram ? $ideogram->{tag} : "default";
+				#printdumper($ideogram) if $ideogram->{chr} eq "hs1";
+				if ( $value < 1 ) {
+					$rpfactor = $relative
+						|| $DIMS->{ideogram}{$tag}{ $radius_flag || "radius_inner" };
+				} else {
+					$rpfactor = $relative
+						|| $DIMS->{ideogram}{$tag}{ $radius_flag || "radius_outer" };
+				}
+				$value_converted = unit_convert(
+																				from    => $string,
+																				to      => "p",
+																				factors => { rp => $rpfactor }
+																			 );
+			}
+			$expression =~ s/$string/$value_converted/;
     }
-	
-	$expression =~ s/$string/$value_converted/;
-    }
-    
     $expression = eval $expression;
-    
     stop_timer("unitparse");
     return $expression;
+	}
+
+sub parse_suffixed_number {
+	my $str          = shift;
+	return if ! defined $str;
+	my $suffix_power = { k=>3, m=>6, g=>9, t=>12 };
+	my $parsed;
+	while($str =~ /(([\d+.]+)([kmgt])b?)/ig) {
+		$parsed = 1;
+		my ($to_replace,$num,$suffix) = ($1,$2,$3);
+		$suffix = lc $suffix;
+		if(! defined $suffix_power->{$suffix}) {
+			error("ticks","bad_suffix",$suffix,$to_replace);
+		} else {
+			my $multiplier = 10**$suffix_power->{$suffix};
+			$str =~ s/$to_replace/($num*$multiplier)/;
+		}
+	}
+	if($parsed) {
+		my $str_eval = eval $str;
+		if ($@) {
+			error("ticks","unparsable",$str);
+		}
+		return $str_eval;
+	} else {
+		return $str;
+	}
 }
 
 1;

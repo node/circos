@@ -65,22 +65,23 @@ our ($IM,$COLORS,$PNG_MAKE,$SVG_MAKE,$MAP_MAKE);
 our $default_color = "black";
 
 sub draw_line {
-    my ($points, $thickness, $color) = @_;
+	my ($points, $thickness, $color, $svg) = @_;
 
-    $color ||= fetch_conf("default_color") || $default_color;
+	$color ||= fetch_conf("default_color") || $default_color;
 
-    if($PNG_MAKE) {
-	Circos::PNG::draw_line( points    => $points,
-				thickness => $thickness,
-				color     => $color );
-
-    }
-    if($SVG_MAKE) {
-	# svg line
-	Circos::SVG::draw_line( points    => $points,
-				thickness => $thickness,
-				color     => $color );
-    }
+	if($PNG_MAKE) {
+		Circos::PNG::draw_line( points    => $points,
+														thickness => $thickness,
+														color     => $color );
+		
+	}
+	if($SVG_MAKE) {
+		Circos::SVG::draw_line( points    => $points,
+														thickness => $thickness,
+														color     => $color,
+														attr      => $svg->{attr},
+													);
+	}
 }
 
 1;

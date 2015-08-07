@@ -68,6 +68,7 @@ sub getxypos {
 	if(! defined $_[0] || ! defined $_[1]) {
 		fatal_error("geometry","bad_angle_or_radius",$_[0],$_[1]);
 	}
+	#return (10*$_[0],$_[1]);
 	return (
 					$DIMS->{image}{radius} + $_[1] * cos( $_[0] * $DEG2RAD ),
 					$DIMS->{image}{radius} + $_[1] * sin( $_[0] * $DEG2RAD )
@@ -75,24 +76,24 @@ sub getxypos {
 }
 
 sub angle_quadrant {
-    my $angle = shift;
-    # added tests in 0.56-2
-    while($angle < -90) { $angle += 360; }
-    while($angle > 270) { $angle -= 360; }
-
-    if($angle < -90 || $angle > 270) {
-	fatal_error("geometry","angle_out_of_bounds",$angle);
-    } else {
-	if($angle <= 0) {
-	    return 0;
-	} elsif ($angle <= 90) {
-	    return 1;
-	} elsif ($angle <= 180) {
-	    return 2;
+	my $angle = shift;
+	# added tests in 0.56-2
+	while($angle < -90) { $angle += 360; }
+	while($angle > 270) { $angle -= 360; }
+	
+	if($angle < -90 || $angle > 270) {
+		fatal_error("geometry","angle_out_of_bounds",$angle);
 	} else {
+		if($angle <= 0) {
+	    return 0;
+		} elsif ($angle <= 90) {
+	    return 1;
+		} elsif ($angle <= 180) {
+	    return 2;
+		} else {
 	    return 3;
+		}
 	}
-    }
 }
 
 sub getu {

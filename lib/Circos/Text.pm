@@ -88,17 +88,18 @@ sub draw_text {
 												 is_parallel => { default => 0 },
 												 is_rotated  => { default => 1 },
 
-												 rotation   => { default => 0 },
+												 rotation    => { default => 0 },
 					
-												 x_offset   => { default => 0 },
-												 y_offset   => { default => 0 },
+												 x_offset    => { default => 0 },
+												 y_offset    => { default => 0 },
 					
-												 guides     => { default => 0 },
+												 guides      => { default => 0 },
 
-												 mapoptions => { optional => 1, type => HASHREF },
+												 svg         => { optional => 1, type => HASHREF|UNDEF },
+												 mapoptions  => { optional => 1, type => HASHREF },
 												});
 	} else {
-		%params = @args;
+		%params                = @args;
 		$params{color}       ||= fetch_conf("default_font_color") || $default_font_color;
 		$params{is_parallel} ||= 0;
 		$params{x_offset}    ||= 0;
@@ -212,7 +213,10 @@ sub draw_text {
 	}
 
 	if ($SVG_MAKE) {
-		Circos::SVG::draw_text(%params,angle_offset=>$angle_offset);
+		Circos::SVG::draw_text(%params,
+													 svg         => undef,
+													 attr        => $params{svg}{attr},
+													 angle_offset=> $angle_offset);
 	}
 
 	if ($params{guides}) {

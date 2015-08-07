@@ -39,6 +39,7 @@ our @EXPORT = qw();
 use Carp qw( carp confess croak );
 use FindBin;
 use GD;
+use Math::VecStat qw(min max);
 use Params::Validate qw(:all);
 
 use lib "$FindBin::RealBin";
@@ -67,31 +68,51 @@ for my $f ( qw ( ) ) {
 sub draw_arc {
   my %params;
   if( fetch_conf("debug_validate") ) {
-      %params = validate(@_,{
-	  point            => { type    => ARRAYREF },
-	  width            => 1,
-	  height           => 0,
-	  angle_start      => { default => 0 },
-	  angle_end        => { default => 360 },
-	  stroke_color     => 0,
-	  stroke_thickness => 0,
-	  color            => 0,
-			 });
+		%params = validate(@_,{
+													 point            => { type    => ARRAYREF },
+													 width            => 1,
+													 height           => 0,
+													 angle_start      => { default => 0 },
+													 angle_end        => { default => 360 },
+													 stroke_color     => 0,
+													 stroke_thickness => 0,
+													 color            => 0,
+													});
   } else {
-      %params = @_;
-      $params{angle_start}      ||= 0;
-      $params{angle_end}        ||= 360;
+		%params = @_;
+		$params{angle_start}      ||= 0;
+		$params{angle_end}        ||= 360;
   }
   $params{height} ||= $params{width};
   if(@{$params{point}} != 2) {
-      fatal_error("argument","list_size",current_function(),current_package(),2,int(@{$params{point}}));
+		fatal_error("argument","list_size",current_function(),current_package(),2,int(@{$params{point}}));
   }
   printdebug_group("png","arc",@{$params{point}},@params{qw(width height angle_start angle_end)});
 
   # first fill the arc
   if(my $color = $params{color}) {
-      my $color_obj = aa_color($color,$IM,$COLORS);
-      $IM->filledArc(@{$params{point}},@params{qw(width height angle_start angle_end)},$color_obj);
+		#printinfo($color);
+		my $color_obj = aa_color($color,$IM,$COLORS);
+		if($params{angle_start} == 0 && $params{angle_end} == 360 && rgb_color_opacity($color) !=1) {
+			my $sections = 2*max(3,$params{width},$params{height});
+			# approximate a circle with a polygon, since GD's filledArc and filledEllipse
+			# don't work well with transparent colors
+			my $poly = new GD::Polygon;
+			my ($x,$y)   = @{$params{point}};
+			my ($rx,$ry) = map { $_/2 } @params{qw(width height)};
+			for my $i (0..$sections-1) {
+				my $angle = 2*$PI*$i/$sections;
+				$poly->addPt($x + $rx * cos($angle),
+										 $y + $ry * sin($angle));
+			}
+			draw_polygon(polygon=>$poly,
+									 color=>$params{stroke_color},
+									 fill_color=>$params{color});
+			#$IM->filledEllipse(@{$params{point}},@params{qw(width height)},$color_obj);
+		} else {
+			$IM->filledArc(@{$params{point}},@params{qw(width height angle_start angle_end)},$color_obj);
+		}
+
   }
   # stroke the arc
   stroke($params{stroke_thickness},$params{stroke_color},"arc",@{$params{point}},@params{qw(width height angle_start angle_end)});
@@ -102,14 +123,14 @@ sub draw_polygon {
   if( fetch_conf("debug_validate") ) {
 		%params = validate(@_,{
 													 polygon          => 1,
-													 color            => fetch_conf("default_color") || $default_color,
+													 color            => 0, # fetch_conf("default_color") || $default_color,
 													 thickness        => 0,
 													 pattern          => 0,
 													 fill_color       => 0,
 													});
   } else {
 		%params = @_;
-		$params{color}            ||= fetch_conf("default_color") || $default_color;
+		#$params{color} ||= fetch_conf("default_color") || $default_color;
   }
 
   printdebug_group("png","polygon",map {@$_} $params{polygon}->vertices);
@@ -136,9 +157,9 @@ sub draw_line {
   my %params;
   if( fetch_conf("debug_validate") ) {
     %params = validate(@_,{
-	points           => { type    => ARRAYREF },
-	color            => { default => fetch_conf("default_color") || $default_color  },
-	thickness        => { default => 1 },
+													 points           => { type    => ARRAYREF },
+													 color            => { default => fetch_conf("default_color") || $default_color  },
+													 thickness        => { default => 1 },
 		       });
   } else {
       %params = @_;
@@ -194,6 +215,7 @@ sub draw_bezier {
 sub stroke {
 	my ($st,$sc,$fn,@args) = @_;
 	return unless $st;
+	return unless $sc;
 	my $color_obj;
 	$sc ||= fetch_conf("default_color") || $default_color;
 	my ($b,$bc,$buse);

@@ -177,7 +177,9 @@ sub parse_chromosomes {
 		      #printdumper(@chr_in_c_found);
 		      for my $c (@chr_in_c_found) {
 			  next if $c->{reject};
-			  if (! $c->{rx}) {
+			  # now both RX and literals will be processed
+			  # this is experimental 0.67-pre8
+			  if (1 || ! $c->{rx}) {
 			      my $str = $c->{chr};
 			      if ($c->{reject}) {
 				  $str = "-$str";
@@ -351,6 +353,8 @@ sub parse_chromosomes_record {
   my $str = shift;
   my $default_delim  = "[:=]";
   my ($chr,$runlist) = split(Circos::Configuration::fetch_configuration("list_field_delim") || $default_delim ,$str);
+  $runlist = Circos::Configuration::parse_conf_fn($runlist) if defined $runlist;
+  #printinfo($runlist);
   my ($tag,$reject,$rx);
   ( $reject, $chr, $tag ) = $chr =~ /([!-])?(.+?)(?:\[([^\[\]]+)\])?$/;
   $reject = $reject ? 1 : 0;

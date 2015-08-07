@@ -34,20 +34,18 @@ use strict;
 use warnings;
 
 use base 'Exporter';
-our @EXPORT = qw(
-
-							 );
+our @EXPORT = qw();
 
 use Carp qw( carp confess croak );
 use Cwd;
 use FindBin;
-#use File::Spec::Functions;
 use Math::Round;
 use Math::VecStat qw(max);
-#use Memoize;
 use Params::Validate qw(:all);
-#use Regexp::Common qw(number);
 
+#use File::Spec::Functions;
+#use Memoize;
+#use Regexp::Common qw(number);
 #use POSIX qw(floor ceil);
 
 use lib "$FindBin::RealBin";
@@ -98,10 +96,8 @@ sub read_karyotype {
 
 sub read_karyotype_file {
 	my ($file,$karyotype) = @_;
-	my $file_located = locate_file(file=>$file,name=>"karyotype",return_undef=>1);
-	if(! $file_located) {
-		fatal_error("io","cannot_read",$file,"karyotype",$!);
-	}
+	my $file_located      = locate_file(file=>$file,name=>"karyotype",return_undef=>1);
+	fatal_error("io","cannot_read",$file,"karyotype",$!) if ! $file_located;
 	my $chr_index;
 	if (! keys %$karyotype) {
 		$chr_index = 0;
@@ -129,22 +125,25 @@ sub read_karyotype_file {
 
 		#fatal_error("data","bad_karyotype_format",$file,$line);
 
+		$start =~ s/[,_]//g;
+		$end   =~ s/[,_]//g;
+
 		if ( ! is_number($start,"int") || ! is_number($end,"int") ) {
 	    fatal_error("data","malformed_karyotype_coordinates",$start,$end);
 		}
 		if ( $end <= $start ) {
 	    fatal_error("data","inconsistent_karyotype_coordinates",$start,$end);
 		}
-		if (@tok < 7) {
-	    fatal_error("data","bad_karyotype_band_format",$line);
+		if (@tok != 7 && @tok != 8) {
+	    fatal_error("data","bad_karyotype_format",$line);
 		}
-	
+
 		my $set  = make_set($start,$end,norev=>1);
-	
+
 		# karyotype data structure is a hash with each chromosome being a value
 		# keyed by chromosome name. Bands form a list within the chromosome
 		# data structure, keyed by 'band'.
-	
+
 		my $data = {
 								start   => $start,
 								end     => $end,
@@ -205,7 +204,7 @@ sub read_karyotype_file {
 # we perform more detailed diagnostics.
 #
 # The following are checked
-# 
+#
 # error  condition
 # FATAL  a band has no associated chromosome
 # FATAL  band coordinates extend outside chromosome

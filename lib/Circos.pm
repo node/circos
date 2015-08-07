@@ -1,7 +1,7 @@
 package Circos;
 
-our $VERSION      = "0.64";
-our $VERSION_DATE = "2 May 2013";
+our $VERSION      = "0.67-7";
+our $VERSION_DATE = "16 Mar 2015";
 
 =pod
 
@@ -16,19 +16,18 @@ Circos - Circular data visualizations for comparison of genomes, among other thi
 
 =head1 DESCRIPTION
 
-Circos is an application for the generation of publication-quality,
-circularly composited renditions of genomic data and related
-annotations.
+Circos is an application for the generation circularly composited data visualizations. 
 
-Circos is particularly suited for visualizing alignments, conservation
-and intra and inter-chromosomal relationships. However, Circos can be
-used to plot any kind of 2D data in a circular layout - its use is not
-limited to genomics. Circos' use of lines to relate position pairs
-(ribbons add a thickness parameter to each end) is effective to
-display relationships between objects or positions on one or more
-scales.
+Circos is particularly suited for visualizing data in genomics
+(alignments, conservation and intra and inter-chromosomal
+relationships like fusions). However, Circos can be used to plot any
+kind of 2D data in a circular layout - its use is not limited to
+genomics. Circos' use of lines to relate position pairs (ribbons add a
+thickness parameter to each end) is effective to display relationships
+between objects or positions on one or more scales.
 
-Presently all documentation is in the form of tutorials at L<http://www.circos.ca>.
+All documentation is in the form of tutorials at
+L<http://www.circos.ca>.
 
 =head1 IMPLEMENTATION
 
@@ -40,7 +39,7 @@ another image, call run again with different options.
 
 =head1 VERSION
 
-Version 0.64
+Version 0.67-6
 
 =head1 FUNCTIONS/METHODS
 
@@ -50,72 +49,23 @@ Version 0.64
 
 use strict;
 use warnings;
-use Carp       qw( carp confess croak );
-
 use lib "$FindBin::RealBin";
 use lib "$FindBin::RealBin/../lib";
 use lib "$FindBin::RealBin/lib";
 
 BEGIN {
-	my @modules = ("Carp qw(carp confess croak)",
-								 "Clone",
-								 "Config::General 2.50",
-								 "Cwd",
-								 "Data::Dumper",
-								 "Digest::MD5 qw(md5_hex)",
-								 "File::Basename",
-								 "File::Spec::Functions",
-								 "File::Temp qw(tempdir)",
-								 "FindBin",
-								 "Font::TTF::Font",
-								 "GD::Polyline",
-								 "GD",
-								 "Getopt::Long",
-								 "IO::File",
-								 "List::Util qw(max min)",
-								 "List::MoreUtils qw(uniq)",
-								 "Math::Bezier",
-								 "Math::BigFloat",
-								 "Math::Round qw(round nearest)",
-								 "Math::VecStat qw(sum average)",
-								 "Memoize",
-								 "POSIX qw(atan)",
-								 "Params::Validate qw(:all)",
-								 "Pod::Usage",
-								 "Regexp::Common qw(number)",
-								 "Readonly",
-								 "Set::IntSpan 1.16 qw(map_set)",
-								 "Storable qw(dclone)",
-								 "Sys::Hostname",
-								 "Text::Format",
-								 "Time::HiRes qw(gettimeofday tv_interval)",
-								 );
-	
-	for my $m (@modules) {
-		my ($root) = split(" ",$m);
-		if(eval "use $m; 1") {
-			# loaded ok
-		} else {
-			printf("\n*** REQUIRED MODULE IS MISSING ***\n\n");
-			printf("You are missing the Perl module %s. Use CPAN to install it as described in this tutorial\n\nhttp://www.circos.ca/documentation/tutorials/configuration/perl_and_modules\n\n",$root);
-			exit;
-		}
-	}
+	require Circos::Modules;
+	exit if ! check_modules();
 }
-
-
 
 ################################################################
 # Globals
 
-our ( %OPT,
-			%RE,
+our ( %OPT,%RE,
       $IM_BRUSHES, $IM_TILES, $IM_TILES_COLORED, 
       $MAP_MAKE, @MAP_ELEMENTS,  
       @IDEOGRAMS, %IDEOGRAMS_LOOKUP,
-      $KARYOTYPE, 
-      $GCIRCUM, $GCIRCUM360, $GSIZE_NOSCALE );
-
+      $KARYOTYPE, $GCIRCUM, $GCIRCUM360, $GSIZE_NOSCALE );
 $GSIZE_NOSCALE = 0;
 ################################################################
 
@@ -129,6 +79,7 @@ use Circos::Error;
 use Circos::Expression;
 use Circos::Font;
 use Circos::Geometry;
+use Circos::Heatmap;
 use Circos::Image;
 use Circos::IO;
 use Circos::Ideogram;
@@ -145,2828 +96,3326 @@ use Circos::URL;
 
 # -------------------------------------------------------------------
 =pod
-
+	
   Circos->run( configfile =>$file  );
   Circos->run( config     =>\%CONF );
 
 Runs the Circos code. You must pass either the C<configfile> location
 or a hashref of the configuration options.
-
 =cut
+# -------------------------------------------------------------------
 
-sub run {
+	sub run {
+    start_timer("circos");
+    my $package = shift;
+    %OPT = ref $_[0] eq "HASH" ? %{$_[0]} : @_;
+    Circos::Error::fake_error($OPT{fakeerror}) if defined $OPT{fakeerror};
+    printinfoq(sprintf("%s | v %s | %s | Perl %s",$APP_NAME,$VERSION,$VERSION_DATE,$])) if $OPT{version};
 
-	start_timer("circos");
-	my $package = shift;
+    # Initialize the debug_group for the first time. 
+    # This has to happen out-of-band of the loadconfiguration()
+    # method, because we don't have access to the config tree yet, 
+    # where debug_group has its default value set.
+    #
+    # By default, the following debug reports are produced
+    #
+    # always        summary
+    # with -debug   io, karyotype, timer
+    Circos::Debug::register_debug_groups(\%OPT,\%CONF);
 
-	%OPT = ref $_[0] eq "HASH" ? %{ $_[0] } : @_;
+    printdebug_group("summary",sprintf("welcome to circos v%s %s on Perl %s",$VERSION,$VERSION_DATE,$]));
 
-	printinfoq(sprintf("%s | v %s | %s",$APP_NAME,$VERSION,$VERSION_DATE)) if $OPT{version};
-
-	# Initialize the debug_group for the first time. This has to happen out-of-band of the loadconfiguration()
-	# method, because we don't have access to the config tree yet, where debug_group has its default value set.
-	{
-		my %def = ( summary => 1 );
-		my $reset;
-		for my $g ( split( $COMMA, $OPT{debug_group} || $EMPTY_STR ) ) {
-			if($g =~ /^-(.+)/) {
-				delete $def{$1};
-			} elsif( $g =~ /^[+](.+)/ ) {
-				$def{$1}++;
+    if ( $OPT{config} ) {
+			%CONF = %{ $OPT{config} };
+    } else {
+			my $cfile = $OPT{configfile};
+			if ($cfile) {
+				printdebug_group("summary","loading configuration from file",$cfile);
 			} else {
-				%def = () if ! $reset;
-				$def{$g}++;
+				printdebug_group("summary","guessing configuration file");
+				$cfile = locate_file(file=>"circos.conf",
+														 name=>"main_configuration",
+														 return_undef=>1);
+				fatal_error("configuration","missing") if ! $cfile;
 			}
-		}
-		$CONF{debug_group} = join($COMMA,uniq(keys %def));
-	}
+			Circos::Configuration::loadconfiguration( $cfile );
+			$CONF{configfile} = $cfile;
+			$CONF{configdir}  = dirname($cfile);
+    }
+    # copy command line options to config hash
+    Circos::Configuration::populateconfiguration(%OPT); 
+    Circos::Configuration::validateconfiguration();
+    Circos::Configuration::dump_config(%OPT) if exists $OPT{cdump};
 
-	printdebug_group("summary",sprintf("welcome to circos v%s %s",$VERSION,$VERSION_DATE));
+    printdebug_group("summary","debug will appear for these features:",$CONF{debug_group});
 
-	if ( $OPT{config} ) {
-		%CONF = %{ $OPT{config} };
-	} else {
-		my $cfile = $OPT{configfile};
-		if ($cfile) {
-	    printdebug_group("summary","loading configuration from file",$cfile);
-		} else {
-	    printdebug_group("summary","guessing configuration file");
-	    $cfile = locate_file(file=>"circos.conf",
-													 name=>"main_configuration",
-													 return_undef=>1);
-	    fatal_error("configuration","missing") if ! $cfile;
-		}
-		Circos::Configuration::loadconfiguration( $cfile );
-		$CONF{configfile} = $cfile;
-		$CONF{configdir}  = dirname($cfile);
-	}
+    for my $f ( qw(unit_parse unit_strip locate_file getrelpos_scaled_ideogram_start is_counterclockwise debug_or_group unit_strip unit_validate getanglepos get_angle_pos)) {
+			memoize($f);
+    }
 
-	Circos::Configuration::populateconfiguration(%OPT); # copy command line options to config hash
-	Circos::Configuration::validateconfiguration();
+    $PNG_MAKE = $CONF{image}{file} =~ /\.png/ || $CONF{image}{png};
+    $SVG_MAKE = $CONF{image}{file} =~ /\.svg/ || $CONF{image}{svg};
+    $PNG_MAKE = 1 if ! $SVG_MAKE && ! $PNG_MAKE;
 
-	# fake an error, if we must
-	if ( my $fake_error = fetch_conf("fakeerror")) {
-		my ($cat,$name) = split($COMMA,$fake_error);
-		fatal_error($cat,$name, map { "fake$_" } (1..10) );
-	}
-
-	if ( exists $OPT{cdump} ) {
-		if ($OPT{cdump}) {
-	    printdumper(get_hash_leaf(\%CONF,split("/",$OPT{cdump})));
-		} else {
-	    printdumper(\%CONF);
-		}
-		exit;
-	}
-
-	printdebug_group("summary","debug will appear for these features:",$CONF{debug_group});
-
-	for my $f ( qw(unit_parse unit_strip locate_file getrelpos_scaled_ideogram_start is_counterclockwise debug_or_group unit_strip unit_validate getanglepos get_angle_pos)
-						) {
-		memoize($f);
-	}
-
-	$PNG_MAKE = $CONF{image}{file} =~ /\.png/ || $CONF{image}{png};    
-	$SVG_MAKE = $CONF{image}{file} =~ /\.svg/ || $CONF{image}{svg};
-
-	my $outputfile = sprintf("%s/%s",$CONF{image}{dir},(fileparse($CONF{image}{file},qr/\.(png|svg)/i))[0]);
-
-	# svg/png output files
-	my $outputfile_png = sprintf("%s.png",$outputfile);
-	my $outputfile_svg = sprintf("%s.svg",$outputfile);
-
-	$PNG_MAKE = 1 if ! $SVG_MAKE && ! $PNG_MAKE;
-
-	my $outputfile_map;
-	if ( $CONF{image}{image_map_use} ) {
-		if($outputfile_map = $CONF{image}{image_map_file}) {
-			if (! file_name_is_absolute($outputfile_map)) {
-				$outputfile_map = sprintf("%s/%s",$CONF{image}{dir},$outputfile_map);
-			}
-		} else {
-			$outputfile_map = $CONF{image}{image_map_file} || $outputfile;
-		}
-		# make sure we have an html extension
-		$outputfile_map .= ".html" if $outputfile !~ /\.html$/;
-
-		# if the map name is not defined, derive it from the image output file
-		$CONF{image}{image_map_name} ||= (fileparse($CONF{image}{file},qr/\.(png|svg)/i))[0];
-		$MAP_MAKE = 1;
-	}
-
-	if ($MAP_MAKE) {
-		open MAP, ">$outputfile_map" or fatal_error("io","cannot_write","$outputfile_map","HTML map file",$!);
-		printf MAP ("<map name='%s'>\n",$CONF{image}{image_map_name});
-	}
-	
-	if ( $SVG_MAKE ) {
-		open SVG, ">$outputfile_svg" or fatal_error("io","cannot_write","$outputfile_svg","SVG image file",$!);
-	}
-
-	printsvg(Circos::SVG::tag("xml")); 
-	printsvg(Circos::SVG::tag("doctype"));
-
-	printdebug_group("summary","parsing karyotype and organizing ideograms");
-
-	################################################################
-	# Read karyotype and populate the KARYOTYPE data structure which
-	# stores information about chromosomes and bands. 
-
-	start_timer("karyotype");
-	$KARYOTYPE = Circos::Karyotype::read_karyotype( file => $CONF{karyotype} );
-	Circos::Karyotype::validate_karyotype( karyotype => $KARYOTYPE );
-	Circos::Karyotype::sort_karyotype( karyotype => $KARYOTYPE );
-	printdebug_group("karyotype","got cytogenetic information for",int( keys %$KARYOTYPE ),"chromosomes");
-	stop_timer("karyotype");
-
-	#printdumperq($KARYOTYPE);
-
-	################################################################
-	# determine the chromosomes to be shown and their regions;
-	# if a chromosome region has not been defined (e.g. 15 vs 15:x-y)
-	# then set the region to be the entire chromosome
-	#
-	# if no chromosomes are specified, all chromosomes from the karyotype file
-	# are displayed if chromosomes_display_default is set
-	#
-	# hs1,hs2,hs3
-	# hs1:10-20,hs2,hs3
-	# -hs1:10-20,hs2,hs3
-	# hs1:10-20,hs1:40-50,hs2,hs3
-	#
-	# the ideogram can have an optional label, which can be
-	# used in the chromosomes_order field
-	#
-	# hs1[a],hs2[b],hs3[c]:10-20
-
-	start_timer("ideograms_processing");
-
-	my @chrs = Circos::Ideogram::parse_chromosomes($KARYOTYPE);
-
-	# refine accept/reject regions by
-	# - removing reject regions (defined by breaks) from accept regions
-	# - make sure that the accept/reject regions are within the chromosome (perform intersection)
-
-	refine_display_regions();
-
-	# create a list of structures to draw in the image
-
-	@IDEOGRAMS = grep( $_->{set}->cardinality > 1, create_ideogram_set(@chrs) );
-
-	################################################################
-	# process chr scaling factor; you can scale chromosomes
-	# to enlarge/shrink their extent on the image. Without scaling,
-	# each ideogram will occupy a fraction of the circle (not counting
-	# spaces between the ideograms) proportional to its total size. Thus
-	# a 200Mb chromosome will always be twice as long as a 100Mb chromosome,
-	# regardless of any non-linear scale adjustments.
-	#
-	# with scaling, you can make a 100Mb chromosome occupy the same
-	# extent by using a scale of 2.
-
-	register_chromosomes_scale() if fetch_conf("chromosomes_scale") || fetch_conf("chromosome_scale");
-
-	################################################################
-	# direction of individual ideograms can be reversed
-	# chromosomes_reverse = tag,tag
-
-	register_chromosomes_direction() if $CONF{chromosomes_reverse};
-
-	################################################################
-	# process the order of appearance of the chromosomes on the image
-	#
-	# chromosome names can be labels associated with individual ranges
-	#
-	# ^, -, -, hs3, hs1, -, hs2
-	#
-	# ^, -, -, a, c, -, b
-	#
-	# the process of deteriming the final order is convoluted
-
-	#printdumper(@IDEOGRAMS);
-	#printdumperq($KARYOTYPE->{hs1}{chr});
-
-	my @chrorder = read_chromosomes_order();
-
-	#printdumperq(@chrorder);
-
-	# construct ideogram groups based on the content of chromosomes_order, with
-	# each group corresponding to a list of tags between breaks "|" in the
-	# chromosomes_order string
-
-	my $chrorder_groups = [ { idx => 0, cumulidx => 0 } ];
-	$chrorder_groups = make_chrorder_groups($chrorder_groups, \@chrorder);
+    my $outputfile = sprintf("%s/%s",
+														 $CONF{image}{dir},
+														 join("",grep($_ ne "./",
+																					(fileparse($CONF{image}{file},qr/\.(png|svg)/i))[1,0])));
+    $outputfile =~ s/\/+/\//g;
+    fatal_error("io","no_directory",dirname($outputfile),"image files") if ! -d dirname($outputfile);
     
-	#printdumperq(@IDEOGRAMS);
-	#printdumperq($chrorder_groups);
+    # svg/png output files
+    my $outputfile_png = sprintf("%s.png",$outputfile);
+    my $outputfile_svg = sprintf("%s.svg",$outputfile);
 
-	################################################################
-	#
-	# Now comes the convoluted business. Here is where I set the display_idx
-	# which is the order in which the ideograms are displayed.
-	#
-	# Iterate through each group, handling the those with start/end
-	# anchors first, and assign the display_idx to each tag as follows
-	#
-	# - start at 0 if this is a group with start anchor
-	# - start at num_ideograms (backwards) if this is a group with end anchor
-	# - set display_idx <- ideogram_idx if this display_idx is not already defined
-	#     (this anchors the position to be the same as the first placeable ideogram)
-	#
-	################################################################
-	set_display_index($chrorder_groups);
+    printdebug_group("summary","bitmap output image",$outputfile_png) if $PNG_MAKE;
+    printdebug_group("summary","SVG output image",$outputfile_svg)    if $SVG_MAKE;
 
-	#printdumperq($chrorder_groups);
+    my $outputfile_map;
+    if ( $CONF{image}{image_map_use} ) {
+			if ($outputfile_map = $CONF{image}{image_map_file}) {
+				if (! file_name_is_absolute($outputfile_map)) {
+					$outputfile_map = sprintf("%s/%s",$CONF{image}{dir},$outputfile_map);
+				}
+			} else {
+				$outputfile_map = $CONF{image}{image_map_file} || $outputfile;
+			}
+			# make sure we have an html extension
+			$outputfile_map .= ".html" if $outputfile !~ /\.html$/;
+	
+			# if the map name is not defined, derive it from the image output file
+			$CONF{image}{image_map_name} ||= (fileparse($CONF{image}{file},qr/\.(png|svg)/i))[0];
+			$MAP_MAKE = 1;
+    }
+    
+    printdebug_group("summary","HTML map file",$outputfile_map) if $MAP_MAKE;
+    
+    if ($MAP_MAKE) {
+			open MAP, ">$outputfile_map" or fatal_error("io","cannot_write","$outputfile_map","HTML map file",$!);
+			printf MAP ("<map name='%s'>\n",$CONF{image}{image_map_name});
+    }
+    
+    if ( $SVG_MAKE ) {
+			open SVG, ">$outputfile_svg" or fatal_error("io","cannot_write","$outputfile_svg","SVG image file",$!);
+    }
 
-	################################################################
-	#
-	# now check each group and make sure that the display_idx values
-	# don't overlap - if they do, shift each group (starting with
-	# the first one that overlaps) until there is no more overlap
-	#
-	################################################################
+    printsvg(Circos::SVG::tag("xml")); 
+    printsvg(Circos::SVG::tag("doctype"));
+    printdebug_group("summary","parsing karyotype and organizing ideograms");
 
-	reform_chrorder_groups($chrorder_groups);
+    ################################################################
+    # Read karyotype and populate the KARYOTYPE data structure which
+    # stores information about chromosomes and bands. 
 
-	#printdumperq($chrorder_groups);
+    start_timer("karyotype");
+    $KARYOTYPE = Circos::Karyotype::read_karyotype( file => $CONF{karyotype} );
+    Circos::Karyotype::validate_karyotype( karyotype => $KARYOTYPE );
+    Circos::Karyotype::sort_karyotype( karyotype => $KARYOTYPE );
+    printdebug_group("summary","karyotype has",int(keys %$KARYOTYPE),"chromosomes of total size",add_thousands_separator(sum(map { $_->{chr}{set}->cardinality } values %$KARYOTYPE)));
+    printdebug_group("karyotype","found",int( keys %$KARYOTYPE ),"chromosomes");
+    stop_timer("karyotype");
+    
+    #printdumperq($KARYOTYPE);
+    
+    ################################################################
+    # determine the chromosomes to be shown and their regions;
+    # if a chromosome region has not been defined (e.g. 15 vs 15:x-y)
+    # then set the region to be the entire chromosome
+    #
+    # if no chromosomes are specified, all chromosomes from the karyotype file
+    # are displayed if chromosomes_display_default is set
+    #
+    # hs1,hs2,hs3
+    # hs1:10-20,hs2,hs3
+    # -hs1:10-20,hs2,hs3
+    # hs1:10-20,hs1:40-50,hs2,hs3
+    #
+    # the ideogram can have an optional label, which can be
+    # used in the chromosomes_order field
+    #
+    # hs1[a],hs2[b],hs3[c]:10-20
 
-	recompute_chrorder_groups($chrorder_groups);
+    start_timer("ideograms_processing");
 
-	#printdumperq($chrorder_groups);
+    my @chrs = Circos::Ideogram::parse_chromosomes($KARYOTYPE);
 
-	@IDEOGRAMS = sort { $a->{display_idx} <=> $b->{display_idx} } @IDEOGRAMS; 
+    # refine accept/reject regions by
+    # - removing reject regions (defined by breaks) from accept regions
+    # - make sure that the accept/reject regions are within the chromosome (perform intersection)
 
-	if(@IDEOGRAMS > fetch_conf("max_ideograms")) {
-		fatal_error("ideogram","max_number",int(@IDEOGRAMS),fetch_conf("max_ideograms"));
-	}
+    refine_display_regions();
 
-	# for each ideogram, record
-	#  - prev/next ideogram
-	#  - whether axis breaks may be required at ends
+    # create a list of structures to draw in the image
 
-	for my $i ( 0 .. @IDEOGRAMS - 1 ) {
-		my $this = $IDEOGRAMS[$i];
-		my $chr  = $this->{chr};
-		#printstructure("ideogram",$this);
-		next unless defined $this->{display_idx};
-		my $next = $i < @IDEOGRAMS - 1 ? $IDEOGRAMS[$i+1] : $IDEOGRAMS[0];
-		my $prev = $IDEOGRAMS[$i-1];
-		$this->{next} = $next;
-		$this->{prev} = $prev;
-		if ($next->{chr} ne $chr && $this->{set}->max < $KARYOTYPE->{ $chr }{chr}{set}->max ) {
-	    $this->{break}{end} = 1;
-		}
-		if ($prev->{chr} ne $chr && $this->{set}->min > $KARYOTYPE->{ $chr }{chr}{set}->min ) {
-	    $this->{break}{start} = 1;
-		}
-	}
+    @IDEOGRAMS = grep( $_->{set}->cardinality > 1, create_ideogram_set(@chrs) );
 
-	$CONF{chromosomes_units} = unit_convert(from=>$CONF{chromosomes_units},
-																					to=>'b',
-																					factors => {
-																											nb => 1,
-																											rb => 10**(round(log10(sum(map {$_->{set}->cardinality} @IDEOGRAMS )))),
-																										 });
-	printdebug_group("summary","applying global and local scaling");
-	stop_timer("ideograms_processing");
+    ################################################################
+    # process chr scaling factor; you can scale chromosomes
+    # to enlarge/shrink their extent on the image. Without scaling,
+    # each ideogram will occupy a fraction of the circle (not counting
+    # spaces between the ideograms) proportional to its total size. Thus
+    # a 200Mb chromosome will always be twice as long as a 100Mb chromosome,
+    # regardless of any non-linear scale adjustments.
+    #
+    # with scaling, you can make a 100Mb chromosome occupy the same
+    # extent by using a scale of 2.
 
-	################################################################
-	# non-linear scale
+    register_chromosomes_scale() if fetch_conf("chromosomes_scale") || fetch_conf("chromosome_scale");
 
-	start_timer("ideograms_zoom");
-	my @zooms = make_list( $CONF{zooms}{zoom} );
-	for my $zoom (@zooms) {
-		my @param_path = ( $CONF{zooms} );
-		unit_validate( $zoom->{start}, 'zoom/start', qw(u b) );
-		unit_validate( $zoom->{end},   'zoom/end',   qw(u b) );
-		for my $pos (qw(start end)) {
-	    $zoom->{$pos} = unit_convert(
-																	 from    => $zoom->{$pos},
-																	 to      => 'b',
-																	 factors => { ub => $CONF{chromosomes_units} }
-																	);
-		}
-		$zoom->{set} = Set::IntSpan->new( sprintf( '%d-%d', $zoom->{start}, $zoom->{end} ) );
-		my $smooth_distance = seek_parameter( 'smooth_distance', $zoom, @param_path );
-		my $smooth_steps = seek_parameter( 'smooth_steps', $zoom, @param_path );
-		next unless $smooth_distance && $smooth_steps;
-		unit_validate( $smooth_distance, 'smooth_distance', qw(r u b) );
-		$smooth_distance = unit_convert(from    => $smooth_distance,
-																		to      => 'b',
-																		factors => {ub => $CONF{chromosomes_units},
-																								rb => $zoom->{set}->cardinality}
-																	 );
-		$zoom->{smooth}{distance} = $smooth_distance;
-		$zoom->{smooth}{steps}    = $smooth_steps;
-	}
+    ################################################################
+    # direction of individual ideograms can be reversed
+    # chromosomes_reverse = tag,tag
 
-	my $Gspans;
+    register_chromosomes_direction() if $CONF{chromosomes_reverse};
 
-	for my $ideogram (@IDEOGRAMS) {
-		my $chr = $ideogram->{chr};
+    ################################################################
+    # process the order of appearance of the chromosomes on the image
+    #
+    # chromosome names can be labels associated with individual ranges
+    #
+    # ^, -, -, hs3, hs1, -, hs2
+    #
+    # ^, -, -, a, c, -, b
+    #
+    # the process of deteriming the final order is convoluted
 
-		# create sets and level for zoom
-		my @param_path = ( $CONF{zooms}{zoom} );
+    #printdumper(@IDEOGRAMS);
+    #printdumperq($KARYOTYPE->{hs1}{chr});
 
-		# check which zooms apply to this ideogram
-		my @ideogram_zooms = grep( $_->{chr} eq $ideogram->{chr}
-															 && ( !defined $_->{use} || $_->{use} )
-															 && $ideogram->{set}->intersect( $_->{set} )->cardinality,
-															 @zooms );
-		# construct a list of zoomed regions from smoothing parameters (smooth_distance, smooth_steps)
-		my @zooms_smoothers;
-		for my $zoom (@ideogram_zooms) {
-	    my $d = $zoom->{smooth}{distance};
-	    my $n = $zoom->{smooth}{steps};
-	    next unless $d && $n;
-	    my $subzoom_size = $d / $n;
-	    for my $i ( 1 .. $n ) {
-				my $subzoom_scale = ( $zoom->{scale} * ( $n + 1 - $i ) + $ideogram->{scale} * $i ) / ( $n + 1 );
-				0&&printinfo($chr,
-										 $d,$i,$n,
+    my @chrorder = read_chromosomes_order();
+
+    #printdumperq(@chrorder);
+
+    # construct ideogram groups based on the content of chromosomes_order, with
+    # each group corresponding to a list of tags between breaks "|" in the
+    # chromosomes_order string
+
+    my $chrorder_groups = [ { idx => 0, cumulidx => 0 } ];
+    $chrorder_groups = make_chrorder_groups($chrorder_groups, \@chrorder);
+    
+    #printdumperq(@IDEOGRAMS);
+    #printdumperq($chrorder_groups);
+
+    ################################################################
+    #
+    # Now comes the convoluted business. Here is where I set the display_idx
+    # which is the order in which the ideograms are displayed.
+    #
+    # Iterate through each group, handling the those with start/end
+    # anchors first, and assign the display_idx to each tag as follows
+    #
+    # - start at 0 if this is a group with start anchor
+    # - start at num_ideograms (backwards) if this is a group with end anchor
+    # - set display_idx <- ideogram_idx if this display_idx is not already defined
+    #     (this anchors the position to be the same as the first placeable ideogram)
+    #
+    ################################################################
+    set_display_index($chrorder_groups);
+
+    #printdumperq($chrorder_groups);
+
+    ################################################################
+    #
+    # now check each group and make sure that the display_idx values
+    # don't overlap - if they do, shift each group (starting with
+    # the first one that overlaps) until there is no more overlap
+    #
+    ################################################################
+
+    reform_chrorder_groups($chrorder_groups);
+
+    #printdumperq($chrorder_groups);
+
+    recompute_chrorder_groups($chrorder_groups);
+
+    #printdumperq($chrorder_groups);
+
+    @IDEOGRAMS = sort { $a->{display_idx} <=> $b->{display_idx} } @IDEOGRAMS; 
+		
+    if (@IDEOGRAMS > fetch_conf("max_ideograms")) {
+			fatal_error("ideogram","max_number",int(@IDEOGRAMS),fetch_conf("max_ideograms"));
+    }
+
+    # for each ideogram, record
+    #  - prev/next ideogram
+    #  - whether axis breaks may be required at ends
+
+    for my $i ( 0 .. @IDEOGRAMS - 1 ) {
+			my $this = $IDEOGRAMS[$i];
+			my $chr  = $this->{chr};
+			#printstructure("ideogram",$this);
+			next unless defined $this->{display_idx};
+			my $next = $i < @IDEOGRAMS - 1 ? $IDEOGRAMS[$i+1] : $IDEOGRAMS[0];
+			my $prev = $IDEOGRAMS[$i-1];
+			$this->{next} = $next;
+			$this->{prev} = $prev;
+			if ($next->{chr} ne $chr && $this->{set}->max < $KARYOTYPE->{ $chr }{chr}{set}->max ) {
+				$this->{break}{end} = 1;
+			}
+			if ($prev->{chr} ne $chr && $this->{set}->min > $KARYOTYPE->{ $chr }{chr}{set}->min ) {
+				$this->{break}{start} = 1;
+			}
+    }
+
+    $CONF{chromosomes_units} = unit_convert(from=>$CONF{chromosomes_units},
+																						to=>'b',
+																						factors => {
+																												nb => 1,
+																												rb => 10**(round(log10(sum(map {$_->{set}->cardinality} @IDEOGRAMS )))),
+																											 });
+    printdebug_group("summary","applying global and local scaling");
+    stop_timer("ideograms_processing");
+		
+    ################################################################
+    # non-linear scale
+
+    start_timer("ideograms_zoom");
+    my @zooms = make_list( $CONF{zooms}{zoom} );
+    for my $zoom (@zooms) {
+			my @param_path = ($CONF{zooms});
+			next unless show($zoom,@param_path);
+			unit_validate( $zoom->{start}, 'zoom/start', qw(u b) );
+			unit_validate( $zoom->{end},   'zoom/end',   qw(u b) );
+			for my $pos (qw(start end)) {
+				$zoom->{$pos} = unit_convert(
+																		 from    => $zoom->{$pos},
+																		 to      => 'b',
+																		 factors => { ub => $CONF{chromosomes_units} }
+																		);
+			}
+			$zoom->{set} = Set::IntSpan->new( sprintf( '%d-%d', $zoom->{start}, $zoom->{end} ) );
+			my $smooth_distance = seek_parameter( 'smooth_distance', $zoom, @param_path );
+			my $smooth_steps = seek_parameter( 'smooth_steps', $zoom, @param_path );
+			next unless $smooth_distance && $smooth_steps;
+			unit_validate( $smooth_distance, 'smooth_distance', qw(r u b) );
+			$smooth_distance = unit_convert(from    => $smooth_distance,
+																			to      => 'b',
+																			factors => {ub => $CONF{chromosomes_units},
+																									rb => $zoom->{set}->cardinality}
+																		 );
+			$zoom->{smooth}{distance} = $smooth_distance;
+			$zoom->{smooth}{steps}    = $smooth_steps;
+    }
+
+    my $Gspans;
+
+    for my $ideogram (@IDEOGRAMS) {
+			my $chr = $ideogram->{chr};
+
+			# create sets and level for zoom
+			my @param_path = ( $CONF{zooms}{zoom} );
+
+			# check which zooms apply to this ideogram
+			my @ideogram_zooms = grep( $_->{chr} eq $ideogram->{chr}
+																 && ( !defined $_->{use} || $_->{use} )
+																 && $ideogram->{set}->intersect( $_->{set} )->cardinality,
+																 @zooms );
+			# construct a list of zoomed regions from smoothing parameters (smooth_distance, smooth_steps)
+			my @zooms_smoothers;
+			for my $zoom (@ideogram_zooms) {
+				my $d = $zoom->{smooth}{distance};
+				my $n = $zoom->{smooth}{steps};
+				next unless $d && $n;
+				my $subzoom_size = $d / $n;
+				for my $i ( 1 .. $n ) {
+					my $subzoom_scale = ( $zoom->{scale} * ( $n + 1 - $i ) + $ideogram->{scale} * $i ) / ( $n + 1 );
+					0&&printinfo($chr,
+											 $d,$i,$n,
+											 $zoom->{set}->min,
+											 $subzoom_size,$subzoom_scale);
+					my $subzoom_start = $zoom->{set}->min - $i*$subzoom_size;
+					my $subzoom_end   = $subzoom_start + $subzoom_size;
+					my $zs1 = { set => Set::IntSpan->new(sprintf( '%d-%d', $subzoom_start, $subzoom_end ))->intersect( $ideogram->{set} ),
+											scale => $subzoom_scale };
+					push @zooms_smoothers, $zs1 if $zs1->{set}->cardinality;
+					$subzoom_start = $zoom->{set}->max + ( $i - 1 ) * $subzoom_size;
+					$subzoom_end = $subzoom_start + $subzoom_size;
+					my $zs2 = {set => Set::IntSpan->new(sprintf( '%d-%d', $subzoom_start, $subzoom_end ))->intersect( $ideogram->{set} ),
+										 scale => $subzoom_scale};
+					push @zooms_smoothers, $zs2 if $zs2->{set}->cardinality;
+
+				}
+			}
+			push @ideogram_zooms, @zooms_smoothers if @zooms_smoothers;
+			push @ideogram_zooms, {set => $ideogram->{set}, scale => $ideogram->{scale}, null => 1 };
+
+			my %boundaries;
+			for my $zoom (@ideogram_zooms) {
+				for my $pos ($zoom->{set}->min-1,
 										 $zoom->{set}->min,
-										 $subzoom_size,$subzoom_scale);
-				my $subzoom_start = $zoom->{set}->min - $i*$subzoom_size;
-				my $subzoom_end   = $subzoom_start + $subzoom_size;
-				my $zs1 = { set => Set::IntSpan->new(sprintf( '%d-%d', $subzoom_start, $subzoom_end ))->intersect( $ideogram->{set} ),
-										scale => $subzoom_scale };
-				push @zooms_smoothers, $zs1 if $zs1->{set}->cardinality;
-				$subzoom_start = $zoom->{set}->max + ( $i - 1 ) * $subzoom_size;
-				$subzoom_end = $subzoom_start + $subzoom_size;
-				my $zs2 = {set => Set::IntSpan->new(sprintf( '%d-%d', $subzoom_start, $subzoom_end ))->intersect( $ideogram->{set} ),
-									 scale => $subzoom_scale};
-				push @zooms_smoothers, $zs2 if $zs2->{set}->cardinality;
+										 $zoom->{set}->max,
+										 $zoom->{set}->max+1
+										) {
+					$boundaries{$pos}++;
+				}
+			}
+			my @boundaries = sort { $a <=> $b } keys %boundaries;
 
-	    }
-		}
-		push @ideogram_zooms, @zooms_smoothers if @zooms_smoothers;
-		push @ideogram_zooms, {set => $ideogram->{set}, scale => $ideogram->{scale}, null => 1 };
-
-		my %boundaries;
-		for my $zoom (@ideogram_zooms) {
-	    for my $pos ($zoom->{set}->min-1,
-									 $zoom->{set}->min,
-									 $zoom->{set}->max,
-									 $zoom->{set}->max+1
-									) {
-				$boundaries{$pos}++;
-	    }
-		}
-		my @boundaries = sort { $a <=> $b } keys %boundaries;
-
-		# the first and last boundary are, by construction, outside of any
-		# zoom set, so we are rejecting these
-		@boundaries = @boundaries[ 1 .. @boundaries - 2 ];
-		my @covers;
-		for my $i ( 0 .. @boundaries - 2 ) {
-	    my ( $x, $y ) = @boundaries[ $i, $i + 1 ];
-	    my $cover = { set => Set::IntSpan->new("$x-$y") };
-	    $cover->{set} = $cover->{set}->intersect( $ideogram->{set} );
-	    next unless $cover->{set}->cardinality;
-	    for my $zoom (@ideogram_zooms) {
-				if ( $zoom->{set}->intersect( $cover->{set} )->cardinality ) {
-					my $zoom_level = max( $zoom->{scale}, 1 / $zoom->{scale} );
-					if ( ! defined $cover->{level} || ( !$zoom->{null} && $zoom_level > $cover->{level} ) ) {
-						$cover->{level} = $zoom_level;
-						$cover->{scale} = $zoom->{scale};
+			# the first and last boundary are, by construction, outside of any
+			# zoom set, so we are rejecting these
+			@boundaries = @boundaries[ 1 .. @boundaries - 2 ];
+			my @covers;
+			for my $i ( 0 .. @boundaries - 2 ) {
+				my ( $x, $y ) = @boundaries[ $i, $i + 1 ];
+				my $cover = { set => Set::IntSpan->new("$x-$y") };
+				$cover->{set} = $cover->{set}->intersect( $ideogram->{set} );
+				next unless $cover->{set}->cardinality;
+				for my $zoom (@ideogram_zooms) {
+					if ( $zoom->{set}->intersect( $cover->{set} )->cardinality ) {
+						my $zoom_level = max( $zoom->{scale}, 1 / $zoom->{scale} );
+						if ( ! defined $cover->{level} || ( !$zoom->{null} && $zoom_level > $cover->{level} ) ) {
+							$cover->{level} = $zoom_level;
+							$cover->{scale} = $zoom->{scale};
+						}
 					}
 				}
-	    }
-	    my $merged;
-	    for my $c (@covers) {
-				if ( $c->{level} == $cover->{level} && $c->{scale} == $cover->{scale}
-						 && 
-						 ( ( $c->{set}->min == $cover->{set}->max )
-							 || 
-							 ( $c->{set}->max == $cover->{set}->min )
-							 || 
-							 ( $c->{set}->intersect( $cover->{set} )->cardinality )
-						 )
-					 ) {
-					$c->{set} = $c->{set}->union( $cover->{set} );
-					$merged = 1;
-					last;
+				my $merged;
+				for my $c (@covers) {
+					if ( $c->{level} == $cover->{level} && $c->{scale} == $cover->{scale}
+							 && 
+							 ( ( $c->{set}->min == $cover->{set}->max )
+								 || 
+								 ( $c->{set}->max == $cover->{set}->min )
+								 || 
+								 ( $c->{set}->intersect( $cover->{set} )->cardinality )
+							 )
+						 ) {
+						$c->{set} = $c->{set}->union( $cover->{set} );
+						$merged = 1;
+						last;
+					}
 				}
-	    }
-	    if ( !$merged ) {
-				push @covers, $cover;
-	    }
-		}
-		# make sure that covers don't overlap
-		my $prev_cover;
-		for my $cover (@covers) {
-	    $cover->{set}->D($prev_cover->{set}) if $prev_cover;
-	    printdebug_group("zoom",
-											 sprintf(
-															 "zoomregion ideogram %d chr %s %9d %9d scale %5.2f absolutescale %5.2f",
-															 $ideogram->{idx},   $ideogram->{chr},
-															 $cover->{set}->min, $cover->{set}->max,
-															 $cover->{scale},    $cover->{level}
-															)
-											);
-	    $prev_cover = $cover;
-		}
-
-		# add up the zoomed distances for all zooms (zoom range * level) as well as size of all zooms
-		my $sum_cover_sizescaled = sum( map { ( $_->{set}->cardinality - 1 ) * $_->{scale} } @covers );
-		my $sum_cover_size       = sum( map { ( $_->{set}->cardinality - 1 ) } @covers );
-
-		$ideogram->{covers}          = \@covers;
-		$ideogram->{length}{scale}   = $sum_cover_sizescaled;
-		$ideogram->{length}{noscale} = $ideogram->{set}->cardinality;
-	}
-
-	################################################################
-	# construct total size of all displayed ideograms and
-	# cumulative size for each chromosome
-
-	my $Gsize = 0;
-	for my $ideogram (@IDEOGRAMS) {
-		$ideogram->{length}{cumulative}{scale}   = $Gsize;
-		$ideogram->{length}{cumulative}{noscale} = $GSIZE_NOSCALE;
-		for my $cover ( @{ $ideogram->{covers} } ) {
-	    $Gsize += ( $cover->{set}->cardinality - 1 ) * $cover->{scale};
-	    $GSIZE_NOSCALE += ( $cover->{set}->cardinality - 1 );
-		}
-	}
-	printdebug_group("scale","total displayed chromosome size", $GSIZE_NOSCALE );
-	printdebug_group("scale","total displayed and scaled chromosome size", $Gsize );
-
-	$GCIRCUM = $Gsize;
-	for my $i (0..@IDEOGRAMS-1) {
-		my $id1     = $IDEOGRAMS[$i];
-		my $id2     = $IDEOGRAMS[$i+1] || $IDEOGRAMS[0];
-		my $spacing = ideogram_spacing($id1,$id2,0);
-		printdebug_group("spacing","ideogramspacing",
-										 $id1->{chr},$id1->{tag},
-										 $id2->{chr},$id2->{tag},
-										 $spacing);
-		$GCIRCUM += $spacing;
-	}
-
-	# do any ideograms have relative scale?
-
-	my $rel_scale_on       = grep($_->{scale_relative}, @IDEOGRAMS);
-	my $rescale_iterations = (fetch_conf("relative_scale_iterations")||2) * $rel_scale_on;
-
-	for my $iter (1..$rescale_iterations) {
-		my %seen_chr;
-		for my $i (0..@IDEOGRAMS-1) {
-	    my $id = $IDEOGRAMS[$i];
-	    my $scale_rel = $id->{scale_relative};
-	    next if ! defined $scale_rel;
-	    if ($scale_rel >= 1 || $scale_rel <= 0) {
-				fatal_error("ideogram","bad_relative_scale",$scale_rel,$id->{chr},$id->{tag});
-	    }
-	    # total scaled length of all covers for this ideogram
-	    my $displayed_len = sum (map { $_->{set}->cardinality * $_->{scale} } @{$id->{covers}});
-			
-			my $scale_mult  = $scale_rel * ($GCIRCUM - $displayed_len) / ( $displayed_len * ( 1 - $scale_rel ) );
-	    # adjust the cover scale so that the length is the fraction of displayed
-	    # genome given by scale_relative
-	    #
-	    # r = relative_scale
-	    # k = chr magnification
-	    # 
-	    # Assume genome is chromosomes x1, x2, x3. Let G = x1+x2+x3
-	    #
-	    # r = kx1/(kx1+x2+x3)
-	    # k = r(G-x1) / [x1(1-r)]
-	    for my $cover (@{$id->{covers}}) {
-				$cover->{scale} *= $scale_mult; # ?:  *= or =  
-				printdebug_group("scale","rescaling",$i,$id->{chr},
-												 "displayed_len",sprintf("%.3f",$displayed_len/$CONF{chromosomes_units}),
-												 "gcircum",sprintf("%.3f",$GCIRCUM/$CONF{chromosomes_units}),
-												 "scale_mult",sprintf("%.3f",$scale_mult),
-												 "cover_scale",sprintf("%.3f",$cover->{scale}));
-	    }
-		}
-	
-		# We're interested in relative rescaling. Keep things sane by dividing every scale
-		# by the largest one.
-		my ($max_scale) = max ( map { $_->{scale} } (map { @{$_->{covers}} }  @IDEOGRAMS) ) || 1;
-		my ($sum_scale) = sum ( map { $_->{scale} } (map { @{$_->{covers}} }  @IDEOGRAMS) ) || 1;
-		for my $id (@IDEOGRAMS) {
-	    for my $cover (@{$id->{covers}}) {
-				$cover->{scale} /= $sum_scale;
-	    }
-		}
-
-		$Gsize = 0;
-		$GSIZE_NOSCALE = 0;
-		for my $ideogram (@IDEOGRAMS) {
-	    $ideogram->{length}{cumulative}{scale}   = $Gsize;
-	    $ideogram->{length}{cumulative}{noscale} = $GSIZE_NOSCALE;
-	    $ideogram->{length}{scale}               = 0;
-	    for my $cover ( @{ $ideogram->{covers} } ) {
-				my $cover_len = $cover->{set}->cardinality * $cover->{scale};
-				$ideogram->{length}{scale} += $cover_len;
-				$Gsize         += $cover_len;
-				$GSIZE_NOSCALE += ( $cover->{set}->cardinality );
-	    }
-		}
-
-		for my $ideogram (@IDEOGRAMS) {
-	    my $displayed_len = sum ( map { $_->{set}->cardinality * $_->{scale} } @{$ideogram->{covers}} );
-	    printdebug_group("scale","rescaling tally",$ideogram->{chr},
-											 "displayed_len_new",sprintf("%.3f",$displayed_len/$CONF{chromosomes_units}),
-											 "fraction",sprintf("%.3f",$displayed_len/$Gsize));
-		}
-
-		$GCIRCUM = $Gsize;
-		for my $i (0..@IDEOGRAMS-1) {
-	    my $id1     = $IDEOGRAMS[$i];
-	    my $id2     = $IDEOGRAMS[$i+1] || $IDEOGRAMS[0];
-	    my $spacing = ideogram_spacing($id1,$id2,0);
-	    $GCIRCUM   += $spacing; 
-		}
-
-		printdebug_group("scale","rescaling",
-										 "gsize",
-										 sprintf("%.3f",$Gsize/$CONF{chromosomes_units}),
-										 "gsize_noscale",sprintf("%.3f",$GSIZE_NOSCALE/$CONF{chromosomes_units}),
-										 "gcircum",$GCIRCUM/$CONF{chromosomes_units});
-
-	}
-
-	$GCIRCUM360 = 360/$GCIRCUM;
-
-	$DIMS->{image}{radius} = unit_strip( $CONF{image}{radius}, 'p' );
-	$DIMS->{image}{width}  = 2 * $DIMS->{image}{radius};
-	$DIMS->{image}{height} = 2 * $DIMS->{image}{radius};
-    
-	stop_timer("ideograms_zoom");
-
-	if (debug_or_group("scale")) {
-		for my $id (@IDEOGRAMS) {
-	    my $a0 = getanglepos( $id->{set}->min,$id->{chr} );
-	    my $a1 = getanglepos( $id->{set}->max,$id->{chr} );
-	    my $a2 = getanglepos( $id->{next}{set}->min,$id->{next}{chr} );
-	    my $da = abs($a0 - $a1);
-	    my $ds = abs($a2 - $a1);
-	    printdebug_group("scale","final id",$id->{chr},sprintf("%.4f",$da/360));
-	    printdebug_group("scale","final sp",$id->{chr},$id->{next}{chr},sprintf("%.4f",$ds/360));
-		}
-	}
-    
-	printdebug_group("image",
-									 'creating image template for circle',
-									 $DIMS->{image}{radius},
-									 'px diameter'
-									);
-    
-	printsvg( qq{<svg width="$DIMS->{image}{width}px" height="$DIMS->{image}{height}px" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">}
-					);
-
-	register_chromosomes_radius();
-
-	################################################################
-	# repeatedly creating brushes with color allocation can soak up
-	# CPU time. This hash stores brushes of a given width/height size
-	#
-	# width=2 height=3 brush
-	# $im_brushes->{size}{2}{3}
-
-	printdebug_group("summary","allocating image, colors and brushes");
-
-	my $bgfill;
-	if ( $CONF{image}{background} && locate_file( file => $CONF{image}{background}, return_undef => 1 ) ) {
-		$IM = GD::Image->new( locate_file( file => $CONF{image}{background}, name=>"image background" ) );
-	} else {
-		eval {
-	    $IM = GD::Image->new( @{ $DIMS->{image} }{qw(height width)}, 1);
-		};
-		if ($@) {
-	    $IM = GD::Image->new( @{ $DIMS->{image} }{qw(height width)} );
-		}
-		$bgfill = 1;
-	}
-
-	start_timer("color");
-	# Always allocate colors
-	if (1 || $PNG_MAKE) {
-		my $t = [gettimeofday()];
-		$COLORS = allocate_colors( $IM );
-		if (exists $COLORS->{transparent}) {
-	    $IM->transparent( $COLORS->{transparent} );
-		} else {
-	    # if 'transparent' color was not explicitly defined, select one
-	    # starting at 1,0,0 - testing first whether this RGB value has
-	    # already been defined
-	    my @rgb = find_transparent();
-	    printdebug_group("color","allocate_color","default transparent color",@rgb);
-	    allocate_color("transparent",\@rgb,$COLORS,$IM);
-	    $IM->transparent( $COLORS->{transparent} );
-		}
-		if (exists $COLORS->{clear}) {
-	    fatal_error("color","clear_redefined");
-		}
-		$COLORS->{clear} = $COLORS->{transparent};
-		printdebug_group("color","allocated", int( keys %$COLORS ), "colors in",tv_interval($t),"s" );
-		if ($bgfill) {
-	    $IM->fill( 0, 0, fetch_color($CONF{image}{background} || "white", $COLORS) );
-		}
-	}
-	stop_timer("color");
-
-	# TTF sanity
-	Circos::Font::sanity_check();
-
-	if (debug_or_group("ideogram")) {
-		my $max_chr_len   = max ( map { length($_->{chr}) } @IDEOGRAMS ) || 1;
-		my $max_label_len = max ( map { length($_->{label}) } @IDEOGRAMS ) || 1;
-		my $max_len       = max ( map { length($_->{set}->max) } @IDEOGRAMS ) || 1;
-		my $fc = "%${max_chr_len}s";
-		my $fs = "%${max_label_len}s";
-		my $fd = "%${max_len}d";
-		for my $ideogram (sort {$a->{display_idx} <=> $b->{display_idx}} @IDEOGRAMS) {
-	    printdebug_group("ideogram",
-											 sprintf(
-															 "%2d %2d $fc $fs $fs %s $fd $fd %s $fd z $fd $fd s %.2f r %d rad %d %d %d %d %d prev $fs $fs next $fs $fs",
-															 $ideogram->{idx},
-															 $ideogram->{display_idx},
-															 $ideogram->{chr},
-															 $ideogram->{tag},
-															 $ideogram->{label},
-															 $ideogram->{break}{start} ? "B" : "-",
-															 $ideogram->{set}->min,
-															 $ideogram->{set}->max,
-															 $ideogram->{break}{end} ? "B" : "-",
-															 $ideogram->{set}->size,
-															 $ideogram->{length}{cumulative}{noscale},
-															 $ideogram->{length}{cumulative}{scale},
-															 $ideogram->{scale},
-															 $ideogram->{reverse},
-															 $ideogram->{radius},
-															 $ideogram->{radius_inner},
-															 $ideogram->{radius_outer},
-															 $ideogram->{thickness},
-															 getrelpos_scaled(0,$ideogram->{chr}),
-															 @{$ideogram->{prev}}{qw(chr tag)},
-															 @{$ideogram->{next}}{qw(chr tag)},
-
-															)
-											);
-		}
-	}
-	if (debug_or_group("cover")) {
-		for my $ideogram (sort {$a->{display_idx} <=> $b->{display_idx}} @IDEOGRAMS) {
-	    for my $cover (@{$ideogram->{covers}}) {
-				printdebug_group("cover",sprintf("cover %8d %8d %8d %.2f",
-																				 $cover->{set}->min,
-																				 $cover->{set}->max,
-																				 $cover->{set}->cardinality,
-																				 $cover->{scale}));
-	    }
-		}
-	}
-	if (debug_or_group("anglepos")) {
-		for my $ideogram (@IDEOGRAMS) {
-	    for (
-					 my $pos = $ideogram->{set}->min ;
-					 $pos <= $ideogram->{set}->max ;
-					 $pos += $CONF{chromosomes_units}
-					) {
-				printdebug_group("anglepos",
+				if ( !$merged ) {
+					push @covers, $cover;
+				}
+			}
+			# make sure that covers don't overlap
+			my $prev_cover;
+			for my $cover (@covers) {
+				$cover->{set}->D($prev_cover->{set}) if $prev_cover;
+				printdebug_group("zoom",
 												 sprintf(
-																 'ideogrampositionreport %2d %5s pos %9s angle %f r %f',
-																 $ideogram->{idx}, $ideogram->{chr}, $pos,
-																 getanglepos( $pos, $ideogram->{chr}),
-																 $ideogram->{radius})
+																 "zoomregion ideogram %d chr %s %9d %9d scale %5.2f absolutescale %5.2f",
+																 $ideogram->{idx},   $ideogram->{chr},
+																 $cover->{set}->min, $cover->{set}->max,
+																 $cover->{scale},    $cover->{level}
+																)
 												);
-	    }
-		}
-	}
+				$prev_cover = $cover;
+			}
 
-	# All data sets are stored in this structure. I'm making the
-	# assumption that memory is not an issue.
-    
-	my $data;
-	my $track_z;
-	my @track_z;
-	my $track_default;
-    
-	printdebug_group("summary","drawing highlights and ideograms");
-    
-	################################################################
-	#
-	# chromosome ideograms and highlights
-	#
-	
-	################################################################
-	#
-	# Process data for highlights
-	#
-	# Highlights work differently than other data types, because they're
-	# drawn underneath all othere data and figure elements,
-	# including grids, tick marks and tick labels.
-	#
-	################################################################
+			# add up the zoomed distances for all zooms (zoom range * level) as well as size of all zooms
+			my $sum_cover_sizescaled = sum( map { ( $_->{set}->cardinality - 1 ) * $_->{scale} } @covers );
+			my $sum_cover_size       = sum( map { ( $_->{set}->cardinality - 1 ) } @covers );
 
-	start_timer("highlights");
-	$track_default->{highlights} = parse_parameters( fetch_conf("highlights"), "highlight" );
-	
-	my @highlight_tracks = map { parse_parameters($_, "highlight", 0) } 
-		Circos::Track::make_tracks( fetch_conf("highlights","highlight"), 
-																$track_default->{highlights},
-																"highlight.bg" );
-	
-	@highlight_tracks = grep(show($_,$track_default->{highlights}), @highlight_tracks);
-	
-	for my $track ( @highlight_tracks ) {
-		my @param_path = ( $track, $track_default->{highlights} );
-		
-		my $track_type = "highlight";
-		my $track_id   = $track->{id};
-		my $track_file = locate_file( file => seek_parameter("file",@param_path), name=>"$track_type track id $track_id");
-		
-		printdebug_group("summary","reading data and processing $track_type track id",$track_id,"from",$track_file);
-		
-		my $track_file_param = {
-														addset       => 1,
-														padding      => seek_parameter( 'padding',      @param_path ),
-														minsize      => seek_parameter( 'minsize',      @param_path ),
-														record_limit => seek_parameter( 'record_limit', @param_path )
-													 };
-		
-		$track->{__data}  = Circos::IO::read_data_file($track_file,$track_type,$track_file_param,$KARYOTYPE);
-		
-		$track->{z} = seek_parameter("z",@param_path) || 0;
-		# compute z values for each data point
+			$ideogram->{covers}          = \@covers;
+			$ideogram->{length}{scale}   = $sum_cover_sizescaled;
+			$ideogram->{length}{noscale} = $ideogram->{set}->cardinality;
+    }
 
-		if(@{$track->{__data}} > fetch_conf("max_points_per_track")) {
-			fatal_error("track","max_number",int(@{$track->{__data}}),$track_type,$track_file,fetch_conf("max_points_per_track"));
-		}
+    ################################################################
+    # construct total size of all displayed ideograms and
+    # cumulative size for each chromosome
 
-		for my $datum ( @{$track->{__data}} ) {
-	    $datum->{param}{z} = seek_parameter("z",$datum) || 0;
-		}
-		
-	}
-	stop_timer("highlights");
-	
-	################################################################
-	#
-	# Draw ideograms
-	#
-	################################################################
+    my $Gsize = 0;
+    for my $ideogram (@IDEOGRAMS) {
+			$ideogram->{length}{cumulative}{scale}   = $Gsize;
+			$ideogram->{length}{cumulative}{noscale} = $GSIZE_NOSCALE;
+			for my $cover ( @{ $ideogram->{covers} } ) {
+				$Gsize += ( $cover->{set}->cardinality - 1 ) * $cover->{scale};
+				$GSIZE_NOSCALE += ( $cover->{set}->cardinality - 1 );
+			}
+    }
+    printdebug_group("scale","total displayed chromosome size", $GSIZE_NOSCALE );
+    printdebug_group("scale","total displayed and scaled chromosome size", $Gsize );
 
-	printsvg(qq{<g id="ideograms">}) if $SVG_MAKE;
+    $GCIRCUM = $Gsize;
+    for my $i (0..@IDEOGRAMS-1) {
+			my $id1     = $IDEOGRAMS[$i];
+			my $id2     = $IDEOGRAMS[$i+1] || $IDEOGRAMS[0];
+			my $spacing = ideogram_spacing($id1,$id2,0);
+			printdebug_group("spacing","ideogramspacing",
+											 $id1->{chr},$id1->{tag},
+											 $id2->{chr},$id2->{tag},
+											 $spacing);
+			$GCIRCUM += $spacing;
+    }
 
-	start_timer("ideograms_draw");
+    # do any ideograms have relative scale?
 
-	for my $ideogram (@IDEOGRAMS) {
+    my $rel_scale_on       = grep($_->{scale_relative}, @IDEOGRAMS);
+    my $rescale_iterations = (fetch_conf("relative_scale_iterations")||2) * $rel_scale_on;
 
-		my $chr = $ideogram->{chr};
-		my $tag = $ideogram->{tag};
-
-		Circos::Track::Highlight::draw_highlights( \@highlight_tracks,
-																							 $track_default->{highlights},
-																							 $chr, 
-																							 $ideogram->{set},
-																							 $ideogram,
-																							 { ideogram => 0, layer_with_data => 0 } );
-
-		my ( $start, $end )     = ( $ideogram->{set}->min, $ideogram->{set}->max );
-		my ( $start_a, $end_a ) = ( getanglepos( $start, $chr ), getanglepos( $end, $chr ) );
-
-		my @param_path = ( fetch_conf("ideogram") );
-		next if hide(@param_path);
-
-		printdebug_group("karyotype",sprintf('ideogram %s scale %f idx %d base_range %d %d angle_range %.3f %.3f',
-																				 $chr, $ideogram->{scale}, $ideogram->{display_idx},
-																				 $start, $end, $start_a, $end_a
-																				)
-										);
-
-		# first pass at drawing ideogram - stroke and fill
-		# TODO consider removing this if radius_from==radius_to
-	
-		my $url = seek_parameter("url",$ideogram) || $CONF{ideogram}{ideogram_url};
-		$url = format_url(url=>$url,param_path=>[$ideogram, { start=>$ideogram->{set}->min, end=>$ideogram->{set}->max,} ] );
-		#printinfo($url);
-
-		slice(
-					image       => $IM,
-					start       => $start,
-					end         => $end,
-					chr         => $chr,
-					radius_from => $DIMS->{ideogram}{ $tag }{radius_inner},
-					radius_to   => $DIMS->{ideogram}{ $tag }{radius_outer},
-					edgecolor   => $CONF{ideogram}{stroke_color},
-					edgestroke  => $CONF{ideogram}{stroke_thickness},
-					fillcolor   => $CONF{ideogram}{fill} ? ( $ideogram->{color} || $KARYOTYPE->{$chr}{chr}{color} || $CONF{ideogram}{fill_color} ) : undef,
-					mapoptions  => { url=>$url },
-					guides      => fetch_conf("guides","object","ideogram") || fetch_conf("guides","object","all"),
-				 );
-
-		# cytogenetic bands
-		for my $band ( make_list( $KARYOTYPE->{$chr}{band} ) ) {
-	    next unless $CONF{ideogram}{show_bands};
-	    my ( $bandstart, $bandend ) = @{$band}{qw(start end)};
-	    my $bandset = $band->{set}->intersect( $ideogram->{set} );
-	    next unless $bandset->cardinality;
-	    my $fillcolor =
-				$CONF{ideogram}{band_transparency}
-					? sprintf( '%s_a%d',
-										 $band->{color}, $CONF{ideogram}{band_transparency} )
-						: $band->{color};
-	    
-	    #printdumper($band) if $band->{name} eq "p31.1" && $band->{chr} eq "hs1";
-	    my $url = seek_parameter("url",$band) || $CONF{ideogram}{band_url};
-	    $url = format_url(url=>$url,param_path=>[$band->{options}||{},$band]);
-	    
-	    slice(
-						image       => $IM,
-						start       => $bandset->min,
-						end         => $bandset->max,
-						chr         => $chr,
-						radius_from => get_ideogram_radius($ideogram) -	$DIMS->{ideogram}{ $ideogram->{tag} }{thickness},
-						radius_to  => get_ideogram_radius($ideogram),
-						edgecolor  => $CONF{ideogram}{band_stroke_color} || $CONF{ideogram}{stroke_color},
-						edgestroke => $CONF{ideogram}{band_stroke_thickness},
-						mapoptions => { url=>$url },
-						fillcolor => $CONF{ideogram}{fill_bands} ? $fillcolor : undef
-					 );
-		}
-	
-		if ( $CONF{ideogram}{show_label} ) {
-
-	    my $font_role = "ideogram label";
-	    # Circos font key, such as 'default', or 'condensed'
-	    my $font_key  = $CONF{ideogram}{label_font} || fetch_conf("default_font") || "default";
-	    # font definition, which includes file name and font name, such as /path/to/symbols.ttf,Symbols
-	    my $font_def  = get_font_def_from_key($font_key,$font_role);
-	    # file name component of the definition
-	    my $font_file = get_font_file_from_key($font_key,$font_role);
-	    # font name component of the definition
-	    my $font_name = get_font_name_from_file($font_file);
-	    
-	    my $label  = $KARYOTYPE->{$chr}{chr}{label};
-	    if ( fetch_conf("ideogram","label_with_tag") ) {
-				$label .= $tag if $tag ne $chr && $tag !~ /__/;
-	    }
-	    if ( my $fmt = fetch_conf("ideogram","label_format") ) {
-				if ( $fmt =~ /^eval\(\s*(.*)\s*\)\s*$/ ) {
-					my $expr = $1;
-					$label = Circos::Expression::eval_expression( {data=>[$ideogram]}, $expr );
-				} else {
-					$label = $fmt;
+    for my $iter (1..$rescale_iterations) {
+			my %seen_chr;
+			for my $i (0..@IDEOGRAMS-1) {
+				my $id = $IDEOGRAMS[$i];
+				my $scale_rel = $id->{scale_relative};
+				next if ! defined $scale_rel;
+				if ($scale_rel >= 1 || $scale_rel <= 0) {
+					fatal_error("ideogram","bad_relative_scale",$scale_rel,$id->{chr},$id->{tag});
 				}
-	    }
-	    my $label_case = fetch_conf("ideogram","label_case") || $EMPTY_STR;
-	    if ($label_case eq "upper") {
-				$label = uc $label;
-	    } elsif ($label_case eq "lower") {
-				$label = lc $label;
-	    }
-	    my $label_size = unit_strip( fetch_conf("ideogram","label_size"), 'p' );
+				# total scaled length of all covers for this ideogram
+				my $displayed_len = sum (map { $_->{set}->cardinality * $_->{scale} } @{$id->{covers}});
 	    
-	    my ($label_width, $label_height) = get_label_size(font_file=>$font_file,
-																												size=>$label_size,
-																												text=>$label);
-	    
-	    my $pos          = get_set_middle( $ideogram->{set} );
-	    my $textangle    = get_angle_pos( $pos, $chr );
-	    my $svg_anchor   = "end";
-	    
-	    # centers the label radially - useful only when the label is radial, not parallel
-	    if ( seek_parameter( "label_center", $CONF{ideogram} ) && ! $CONF{ideogram}{label_parallel} ) {
-				my $offset = $label_width;
-				$svg_anchor = "middle";
-				$DIMS->{ideogram}{ $tag }{label}{radius} -= $offset / 2;
-	    }
-	    my ( $offset_angle, $offset_radius ) = textoffset( $textangle,
-																												 $DIMS->{ideogram}{$tag}{label}{radius},
-																												 $label_width, $label_height,
-																												 0,
-																												 $CONF{ideogram}{label_parallel});
-    
-	    my $radius       = $offset_radius + $DIMS->{ideogram}{ $tag }{label}{radius};
-	    my $pangle       = getanglepos( $pos, $chr );
-	    my $pangle_shift = $CONF{ideogram}{label_parallel} ? $RAD2DEG * ($label_width/2/$radius) : 0;
-    
-	    #
-	    #   270 | -90
-	    #       |
-	    #  180 --- 0
-	    #       |
-	    #       90
-	    #
-	    
-	    if ($pangle > 180 || $pangle < 0) {
-				$pangle_shift = -$pangle_shift;
-	    }
-	    
-	    my $label_color = seek_parameter( 'label_color', $CONF{ideogram} ) || 'black';
-
-	    Circos::Text::draw_text (
-															 text        => $label,
-															 font        => fetch_conf("ideogram","label_font") || fetch_conf("default_font") || "default",
-															 size        => $label_size,
-															 color       => $label_color,
-															 angle       => $textangle,
-															 is_rotated  => fetch_conf("ideogram","label_rotated"),
-															 is_parallel => fetch_conf("ideogram","label_parallel"),
-															 radius      => $DIMS->{ideogram}{ $tag }{label}{radius},
-															 guides      => fetch_conf("guides","object","ideogram_label") || fetch_conf("guides","object","all"),
-															 mapoptions  => { url=>$url },
-															);
-		}
-
-		# draw scale ticks
-		if ( $CONF{show_ticks} ) {
-	    start_timer("ideograms_ticks_draw");
-	    draw_ticks(ideogram => $ideogram);
-	    stop_timer("ideograms_ticks_draw");
-		} 
+				my $scale_mult  = $scale_rel * ($GCIRCUM - $displayed_len) / ( $displayed_len * ( 1 - $scale_rel ) );
+				# adjust the cover scale so that the length is the fraction of displayed
+				# genome given by scale_relative
+				#
+				# r = relative_scale
+				# k = chr magnification
+				# 
+				# Assume genome is chromosomes x1, x2, x3. Let G = x1+x2+x3
+				#
+				# r = kx1/(kx1+x2+x3)
+				# k = r(G-x1) / [x1(1-r)]
+				for my $cover (@{$id->{covers}}) {
+					$cover->{scale} *= $scale_mult; # ?:  *= or =  
+					printdebug_group("scale","rescaling",$i,$id->{chr},
+													 "displayed_len",sprintf("%.3f",$displayed_len/$CONF{chromosomes_units}),
+													 "gcircum",sprintf("%.3f",$GCIRCUM/$CONF{chromosomes_units}),
+													 "scale_mult",sprintf("%.3f",$scale_mult),
+													 "cover_scale",sprintf("%.3f",$cover->{scale}));
+				}
+			}
 	
-		# ideogram highlights
-		Circos::Track::Highlight::draw_highlights( \@highlight_tracks,
-																							 $track_default->{highlights},
-																							 $chr, 
-																							 $ideogram->{set}, 
-																							 $ideogram,
-																							 {
-																								ideogram => 1, layer_with_data => 0 } );
+			# We're interested in relative rescaling. Keep things sane by dividing every scale
+			# by the largest one.
+			my ($max_scale) = max ( map { $_->{scale} } (map { @{$_->{covers}} }  @IDEOGRAMS) ) || 1;
+			my ($sum_scale) = sum ( map { $_->{scale} } (map { @{$_->{covers}} }  @IDEOGRAMS) ) || 1;
+			for my $id (@IDEOGRAMS) {
+				for my $cover (@{$id->{covers}}) {
+					$cover->{scale} /= $sum_scale;
+				}
+			}
 
-		# ideogram outline - stroke only, not filled
-		# ideogram outline and label
-		if ($CONF{ideogram}{stroke_thickness}) {
-	    slice(
+			$Gsize = 0;
+			$GSIZE_NOSCALE = 0;
+			for my $ideogram (@IDEOGRAMS) {
+				$ideogram->{length}{cumulative}{scale}   = $Gsize;
+				$ideogram->{length}{cumulative}{noscale} = $GSIZE_NOSCALE;
+				$ideogram->{length}{scale}               = 0;
+				for my $cover ( @{ $ideogram->{covers} } ) {
+					my $cover_len = $cover->{set}->cardinality * $cover->{scale};
+					$ideogram->{length}{scale} += $cover_len;
+					$Gsize         += $cover_len;
+					$GSIZE_NOSCALE += ( $cover->{set}->cardinality );
+				}
+			}
+
+			for my $ideogram (@IDEOGRAMS) {
+				my $displayed_len = sum ( map { $_->{set}->cardinality * $_->{scale} } @{$ideogram->{covers}} );
+				printdebug_group("scale","rescaling tally",$ideogram->{chr},
+												 "displayed_len_new",sprintf("%.3f",$displayed_len/$CONF{chromosomes_units}),
+												 "fraction",sprintf("%.3f",$displayed_len/$Gsize));
+			}
+
+			$GCIRCUM = $Gsize;
+			for my $i (0..@IDEOGRAMS-1) {
+				my $id1     = $IDEOGRAMS[$i];
+				my $id2     = $IDEOGRAMS[$i+1] || $IDEOGRAMS[0];
+				my $spacing = ideogram_spacing($id1,$id2,0);
+				$GCIRCUM   += $spacing; 
+			}
+
+			printdebug_group("scale","rescaling",
+											 "gsize",
+											 sprintf("%.3f",$Gsize/$CONF{chromosomes_units}),
+											 "gsize_noscale",sprintf("%.3f",$GSIZE_NOSCALE/$CONF{chromosomes_units}),
+											 "gcircum",$GCIRCUM/$CONF{chromosomes_units});
+
+    }
+
+    $GCIRCUM360 = 360/$GCIRCUM;
+
+    $DIMS->{image}{radius} = unit_strip( $CONF{image}{radius}, 'p' );
+    $DIMS->{image}{width}  = 2 * $DIMS->{image}{radius};
+    $DIMS->{image}{height} = 2 * $DIMS->{image}{radius};
+    
+    stop_timer("ideograms_zoom");
+
+    if (debug_or_group("scale")) {
+			for my $id (@IDEOGRAMS) {
+				my $a0 = getanglepos( $id->{set}->min,$id->{chr} );
+				my $a1 = getanglepos( $id->{set}->max,$id->{chr} );
+				my $a2 = getanglepos( $id->{next}{set}->min,$id->{next}{chr} );
+				my $da = abs($a0 - $a1);
+				my $ds = abs($a2 - $a1);
+				printdebug_group("scale","final id",$id->{chr},sprintf("%.4f",$da/360));
+				printdebug_group("scale","final sp",$id->{chr},$id->{next}{chr},sprintf("%.4f",$ds/360));
+			}
+    }
+    
+    printdebug_group("image",
+										 'creating image template for circle',
+										 $DIMS->{image}{radius},
+										 'px diameter'
+										);
+    
+    printsvg( qq{<svg width="$DIMS->{image}{width}px" height="$DIMS->{image}{height}px" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">}
+						);
+
+    register_chromosomes_radius($CONF{chromosomes_radius});
+
+    ################################################################
+    # repeatedly creating brushes with color allocation can soak up
+    # CPU time. This hash stores brushes of a given width/height size
+    #
+    # width=2 height=3 brush
+    # $im_brushes->{size}{2}{3}
+
+    printdebug_group("summary","allocating image, colors and brushes");
+
+    my $bgfill;
+    if ( $CONF{image}{background} && ! defined $CONF{colors}{ $CONF{image}{background} } && locate_file( file => $CONF{image}{background}, return_undef => 1 ) ) {
+			GD::Image->trueColor(1);
+			$IM = GD::Image->new( locate_file( file => $CONF{image}{background}, name=>"image background" ) );
+    } else {
+			eval {
+				$IM = GD::Image->new( @{ $DIMS->{image} }{qw(height width)}, 1);
+			};
+			if ($@) {
+				$IM = GD::Image->new( @{ $DIMS->{image} }{qw(height width)} );
+			}
+			$bgfill = 1;
+    }
+		
+    start_timer("color");
+    # Always allocate colors
+    if (1 || $PNG_MAKE) {
+			my $t = [gettimeofday()];
+			$COLORS = allocate_colors( $IM );
+			if (exists $COLORS->{transparent}) {
+				$IM->transparent( $COLORS->{transparent} );
+			} else {
+				# if 'transparent' color was not explicitly defined, select one
+				# starting at 1,0,0 - testing first whether this RGB value has
+				# already been defined
+				my @rgb = find_transparent();
+				printdebug_group("color","allocate_color","default transparent color",@rgb);
+				allocate_color("transparent",\@rgb,$COLORS,$IM);
+				$IM->transparent( $COLORS->{transparent} );
+			}
+			if (exists $COLORS->{clear}) {
+				fatal_error("color","clear_redefined");
+			}
+			$COLORS->{clear} = $COLORS->{transparent};
+			printdebug_group("color","allocated", int( keys %$COLORS ), "colors in",tv_interval($t),"s" );
+			if ($bgfill) {
+				$IM->fill( 0, 0, fetch_color($CONF{image}{background} || "white", $COLORS) );
+			}
+    }
+    stop_timer("color");
+
+    # TTF sanity
+    Circos::Font::sanity_check();
+
+		printdebug_group("summary","drawing",int(@IDEOGRAMS),"ideograms of total size",add_thousands_separator(sum(map { $_->{set}->cardinality} @IDEOGRAMS)));
+
+    if (debug_or_group("ideogram")) {
+			my $max_chr_len   = max ( map { length($_->{chr}) } @IDEOGRAMS ) || 1;
+			my $max_label_len = max ( map { length($_->{label}) } @IDEOGRAMS ) || 1;
+			my $max_len       = max ( map { length($_->{set}->max) } @IDEOGRAMS ) || 1;
+			my $fc = "%${max_chr_len}s";
+			my $fs = "%${max_label_len}s";
+			my $fd = "%${max_len}d";
+			for my $ideogram (sort {$a->{display_idx} <=> $b->{display_idx}} @IDEOGRAMS) {
+				printdebug_group("ideogram",
+												 sprintf(
+																 "%2d %2d $fc $fs $fs %s $fd $fd %s $fd z $fd $fd s %.2f r %d rad %d %d %d %d %d prev $fs $fs next $fs $fs",
+																 $ideogram->{idx},
+																 $ideogram->{display_idx},
+																 $ideogram->{chr},
+																 $ideogram->{tag},
+																 $ideogram->{label},
+																 $ideogram->{break}{start} ? "B" : "-",
+																 $ideogram->{set}->min,
+																 $ideogram->{set}->max,
+																 $ideogram->{break}{end} ? "B" : "-",
+																 $ideogram->{set}->size,
+																 $ideogram->{length}{cumulative}{noscale},
+																 $ideogram->{length}{cumulative}{scale},
+																 $ideogram->{scale},
+																 $ideogram->{reverse},
+																 $ideogram->{radius},
+																 $ideogram->{radius_inner},
+																 $ideogram->{radius_outer},
+																 $ideogram->{thickness},
+																 getrelpos_scaled(0,$ideogram->{chr}),
+																 @{$ideogram->{prev}}{qw(chr tag)},
+																 @{$ideogram->{next}}{qw(chr tag)},
+
+																)
+												);
+			}
+    }
+    if (debug_or_group("cover")) {
+			for my $ideogram (sort {$a->{display_idx} <=> $b->{display_idx}} @IDEOGRAMS) {
+				for my $cover (@{$ideogram->{covers}}) {
+					printdebug_group("cover",sprintf("cover %8d %8d %8d %.2f",
+																					 $cover->{set}->min,
+																					 $cover->{set}->max,
+																					 $cover->{set}->cardinality,
+																					 $cover->{scale}));
+				}
+			}
+    }
+    if (debug_or_group("anglepos")) {
+			for my $ideogram (@IDEOGRAMS) {
+				for (
+						 my $pos = $ideogram->{set}->min ;
+						 $pos <= $ideogram->{set}->max ;
+						 $pos += $CONF{chromosomes_units}
+						) {
+					printdebug_group("anglepos",
+													 sprintf(
+																	 'ideogrampositionreport %2d %5s pos %9s angle %f r %f',
+																	 $ideogram->{idx}, $ideogram->{chr}, $pos,
+																	 getanglepos( $pos, $ideogram->{chr}),
+																	 $ideogram->{radius})
+													);
+				}
+			}
+    }
+
+    # All data sets are stored in this structure. I'm making the
+    # assumption that memory is not an issue.
+    
+    my $data;
+    my $track_z;
+    my @track_z;
+    my $track_default;
+    
+    printdebug_group("summary","drawing highlights and ideograms");
+    
+    ################################################################
+    #
+    # chromosome ideograms and highlights
+    #
+    
+    ################################################################
+    #
+    # Process data for highlights
+    #
+    # Highlights work differently than other data types, because they're
+    # drawn underneath all othere data and figure elements,
+    # including grids, tick marks and tick labels.
+    #
+    ################################################################
+		
+    start_timer("highlights");
+    $track_default->{highlights} = parse_parameters( fetch_conf("highlights"), "highlight" );
+		
+    my @highlight_tracks = map { parse_parameters($_, "highlight", 0) } 
+			Circos::Track::make_tracks( fetch_conf("highlights","highlight"), 
+																	$track_default->{highlights},
+																	"highlight.bg" );
+		
+    @highlight_tracks = grep(show($_,$track_default->{highlights}), @highlight_tracks);
+		
+    for my $track ( @highlight_tracks ) {
+			my @param_path = ( $track, $track_default->{highlights} );
+
+			my $track_type = "highlight";
+			my $track_id   = $track->{id};
+			my $track_file = locate_file( file => seek_parameter("file",@param_path), name=>"$track_type track id $track_id");
+
+			printdebug_group("summary","process",$track_id,$track_type,$track_file);
+
+			my $track_file_param = {
+															addset       => 1,
+															padding      => seek_parameter( 'padding',      @param_path ),
+															file_rx      => seek_parameter( 'file_rx',      @param_path ),
+															minsize      => seek_parameter( 'minsize',      @param_path ),
+															record_limit => seek_parameter( 'record_limit', @param_path )
+														 };
+
+			$track->{__data}  = Circos::IO::read_data_file($track_file,
+																										 $track_type,
+																										 $track_file_param,
+																										 $KARYOTYPE);
+
+
+			# apply any rules to this highlight track
+			my @rules = Circos::Rule::make_rule_list( $track->{rules}{rule} );
+			# pick out only those rules that are used
+			@rules = grep( use_set($_,$track->{rules}), @rules );
+
+			start_timer("datarules");
+			Circos::Rule::apply_rules_to_track($track,\@rules,\@param_path) if @rules;
+			stop_timer("datarules");
+
+			$track->{__data} = [ grep( show($_), @{$track->{__data}} ) ];
+
+			$track->{z} = seek_parameter("z",@param_path) || 0;
+			# compute z values for each data point
+
+			if (@{$track->{__data}} > fetch_conf("max_points_per_track")) {
+				fatal_error("track","max_number",int(@{$track->{__data}}),$track_type,$track_file,fetch_conf("max_points_per_track"));
+			}
+
+			for my $datum ( @{$track->{__data}} ) {
+				$datum->{param}{z} = seek_parameter("z",$datum) || 0;
+			}
+
+    }
+    stop_timer("highlights");
+
+    ################################################################
+    #
+    # Draw ideograms
+    #
+    ################################################################
+
+    printsvg(qq{<g id="ideograms">}) if $SVG_MAKE;
+
+		# apply rules to ideograms
+		# first, fake an ideogram track with __data and rules entries, so that
+		# we can use rule application functions
+		my $ideogram_track = { __data=>[ map { { data=>[$_],param=>{} } } @IDEOGRAMS ],
+													 rules=>fetch_conf("ideogram","rules") };
+		my @rules = Circos::Rule::make_rule_list( $ideogram_track->{rules}{rule} );
+		# pick out only those rules that are used
+		@rules = grep( use_set($_,$ideogram_track->{rules}), @rules );
+
+		start_timer("datarules");
+		Circos::Rule::apply_rules_to_track($ideogram_track,\@rules,[]) if @rules;
+		stop_timer("datarules");
+
+    start_timer("ideograms_draw");
+
+		for my $datum (@{$ideogram_track->{__data}}) {
+			my @param_path = ( fetch_conf("ideogram") );
+			my $ideogram   = $datum->{data}[0];
+			my $chr        = $ideogram->{chr};
+			my $tag        = $ideogram->{tag};
+
+			Circos::Track::Highlight::draw_highlights( \@highlight_tracks,
+																								 $track_default->{highlights},
+																								 $chr,
+																								 $ideogram->{set},
+																								 $ideogram,
+																								 { ideogram => 0, layer_with_data => 0 } );
+
+			next if hide($datum,@param_path);
+
+			my ( $start, $end )     = ( $ideogram->{set}->min, $ideogram->{set}->max );
+			my ( $start_a, $end_a ) = ( getanglepos( $start, $chr ), getanglepos( $end, $chr ) );
+
+			printdebug_group("karyotype",
+											 sprintf("ideogram %s scale %f idx %d base_range %d %d angle_range %.3f %.3f",
+															 $chr, 
+															 $ideogram->{scale}, 
+															 $ideogram->{display_idx},
+															 $start,$end,$start_a,$end_a
+															)
+											);
+
+			# first pass at drawing ideogram - stroke and fill
+			# TODO consider removing this if radius_from==radius_to
+
+			my $url = seek_parameter("url",$ideogram) || $CONF{ideogram}{ideogram_url};
+			$url = format_url(url=>$url,
+												param_path=>[$ideogram, 
+																		 {start=>$ideogram->{set}->min, end=>$ideogram->{set}->max}]);
+			#printinfo($url);
+
+			for my $svgparam_hash (seek_parameter_glob("^svg.*",undef,fetch_conf("ideogram"))) {
+				for my $svgparam (keys %$svgparam_hash) {
+					my $value = $svgparam_hash->{$svgparam};
+					if (defined $value) { #  $value =~ /^eval\(\s*(.*)\s*\)\s*$/ ) {
+						#my $expr = $1;
+						$value = Circos::Expression::eval_expression( {data=>[$ideogram]}, $value );
+					} else {
+					}
+					$ideogram->{$svgparam} = $value;
+				}
+			}
+			my $color;
+			if(seek_parameter("fill",$datum,@param_path)) {
+				$color = seek_parameter("color|fill_color",$datum,$ideogram,$KARYOTYPE->{$chr}{chr},@param_path);
+			}
+			slice(
 						image       => $IM,
 						start       => $start,
 						end         => $end,
 						chr         => $chr,
-						radius_from => get_ideogram_radius($ideogram) -
-						$DIMS->{ideogram}{ $ideogram->{tag} }{thickness},
-						radius_to  => get_ideogram_radius($ideogram),
-						edgecolor  => $CONF{ideogram}{stroke_color},
-						edgestroke => $CONF{ideogram}{stroke_thickness},
-						fillcolor  => undef,
+						radius_from => $DIMS->{ideogram}{ $tag }{radius_inner},
+						radius_to   => $DIMS->{ideogram}{ $tag }{radius_outer},
+						edgecolor   => seek_parameter("stroke_color",$datum,@param_path),
+						edgestroke  => seek_parameter("stroke_thickness",$datum,@param_path),
+						fillcolor   => $color,
+						pattern     => seek_parameter("fill_pattern",$datum,@param_path),
+						mapoptions  => { url=>$url },
+						svg         =>  { attr => seek_parameter_glob("^svg.*",qr/^svg/,$ideogram) },
+						guides      => fetch_conf("guides","object","ideogram") || fetch_conf("guides","object","all"),
 					 );
-		}
-	}
-    
-	for my $ideogram (@IDEOGRAMS) {
-		if ( $ideogram->{chr} eq $ideogram->{next}{chr} || $ideogram->{break}{start} || $ideogram->{break}{end} ) {
-	    if (@IDEOGRAMS > 1 || $ideogram->{display_idx} < $ideogram->{next}{display_idx}) {
-				draw_axis_break($ideogram);
-	    }
-		}
-	}
-    
-	stop_timer("ideograms_draw");
-    
-	printsvg(qq{</g>}) if $SVG_MAKE;
 
-	#Circos::Ideogram::report_chromosomes($KARYOTYPE);exit;
-
-	################################################################
-	#
-	# Process Links
-	#
-	# Links are stored just like any other data structure, like histograms, but have
-	# two data elements.
-	#
-	# $data->{links}{param}              -> global link parameters from <links> block
-	# $data->{links}{track}[i]           -> individual link track
-	# $data->{links}{track}[i]{param}          parameters
-	# $data->{links}{track}[i]                 list of links
-	# $data->{links}{track}[i]{data}[0]           links start
-	# $data->{links}{track}[i]{data}[1]           links end
-	# $data->{links}{track}[i]{param}             link parameters
-
-	# First, initialize the global links parameters from <links> block, and
-	# then intialize each link track.
-	$track_default->{links} = parse_parameters( fetch_conf("links"), "link" );
-
-	my $link_names;
-	my @t = Circos::Track::make_tracks( fetch_conf("links","link"), 
-																			$track_default->{links},
-																			"link");
-	#printdumper(\@t);exit;
-	my @link_tracks = map { parse_parameters($_, "link", 0) } @t;
-	#printdumper(\@link_tracks);exit;
-	@link_tracks    = grep(show($_,$track_default->{links}), @link_tracks);
-
-	for my $track ( @link_tracks ) {
-
-		# Path to search for parameters: first the <link> block, then <links> block.
-		my @param_path = ( $track, $track_default->{links} );
-		my $track_id   = $track->{id};
-		#printdumper($track);exit;
-		my $track_file = locate_file( file => seek_parameter("file",@param_path), name=>"link $track_id");
-
-		printdebug_group("summary","reading data and processing link id",$track->{id},"track from",$track_file);
-
-		$track->{__data} = Circos::IO::read_data_file($track_file,"link",
-																									{ addset       => 1,
-																										minsize      => seek_parameter( 'minsize', @param_path ),
-																										padding      => seek_parameter( 'padding', @param_path ),
-																										record_limit => seek_parameter( 'record_limit', @param_path )
-																									},
-																									$KARYOTYPE,
-																								 );
-
-		# apply any rules to this set of links
-		my @rules = Circos::Rule::make_rule_list( $track->{rules}{rule} );
-		# pick out only those rules that are used
-		@rules = grep( use_set($_,$track->{rules}), @rules );
-
-		start_timer("datarules");
-		Circos::Rule::apply_rules_to_track($track,\@rules,\@param_path) if @rules;
-		stop_timer("datarules");
-
-		$track->{__data} = [ grep( show($_), @{$track->{__data}} ) ];
-
-		# z-depth for this track
-		$track->{z} = seek_parameter("z",@param_path) || 0;
-		# compute z values for each link
-		for my $link ( @{$track->{__data}} ) {
-	    $link->{param}{z} = seek_parameter("z",$link) || 0;
-		}
-
-	}
-    
-	my $link_report_seen;
-
-	for my $track ( sort { $a->{z} <=> $b->{z} }  @link_tracks ) {
-
-		my @param_path = ( $track, $track_default->{links} );
-		printsvg(qq{<g id="$track->{id}">}) if $SVG_MAKE;
-
-		printdebug_group("summary","drawing links",$track->{id},"z",$track->{z});
-
-		my $track_data = $track->{__data};
-
-		if(@$track_data > fetch_conf("max_links")) {
-			fatal_error("links","max_number",int(@$track_data),$track->{file},fetch_conf("max_links"));
-		}
-
-	LINK:
-		for my $link ( sort { $a->{param}{z} <=> $b->{param}{z} } @$track_data ) {
-	    
-	    my @param_path_link = ( $link, @param_path );
-
-	    # only attempt to draw this link if all coordinates
-	    # are on ideogram regions that have been drawn
-	    for my $link_end ( @{ $link->{data} } ) {
-				my $chr = $link_end->{chr};
-				next LINK if !$KARYOTYPE->{ $chr }{chr}{display};
-				next LINK unless $KARYOTYPE->{ $chr }{chr}{display_region}{accept} ge $link_end->{set};
-	    }
-	    
-	    my $linkradius = unit_parse( seek_parameter( "radius", @param_path_link ) || 0) +
-				unit_parse( seek_parameter( "offset", @param_path_link ) || 0);
-	    
-	    my @i_param_path_link = @param_path_link;
-	    my $perturb = seek_parameter( "perturb", @i_param_path_link );
-	    my $ideogram1 = get_ideogram_by_idx(get_ideogram_idx($link->{data}[0]{set}->min,
-																													 $link->{data}[0]{chr}));
-	    my $ideogram2 = get_ideogram_by_idx(get_ideogram_idx($link->{data}[1]{set}->min,
-																													 $link->{data}[1]{chr}));
-
-	    my $radius1 = unit_parse( seek_parameter( "radius1|radius", @i_param_path_link ), $ideogram1 ) ;
-			#	+	unit_parse( seek_parameter( "offset", @param_path_link ) || 0 , $ideogram1) ;
-	    my $radius2 = unit_parse( seek_parameter( "radius2|radius", @i_param_path_link ), $ideogram2 ) ;
-			#+	unit_parse( seek_parameter( "offset", @param_path_link ) || 0 , $ideogram2) ;
-
-	    #printinfo(seek_parameter("radius1|radius",@i_param_path_link));
-	    #printinfo($radius1,$radius2);
-
-			#printinfo(seek_parameter("bezier_radius", @param_path));
-			#printdumper(@param_path);
-
-	    if ( seek_parameter( "ribbon", @i_param_path_link ) ) {
-
-				my ( $start1, $end1 ) = (max($link->{data}[0]{set}->min,$ideogram1->{set}->min),
-																 min($link->{data}[0]{set}->max,$ideogram1->{set}->max));
-				my ( $start2, $end2 ) = (max($link->{data}[1]{set}->min,$ideogram2->{set}->min),
-																 min($link->{data}[1]{set}->max,$ideogram2->{set}->max));
-				
-				if ( $link->{data}[0]{rev} ) {
-					( $start1, $end1 ) = ( $end1, $start1 );
+			# cytogenetic bands
+			for my $band ( make_list( $KARYOTYPE->{$chr}{band} ) ) {
+				next unless seek_parameter("show_bands",$datum,@param_path);
+				my ( $bandstart, $bandend ) = @{$band}{qw(start end)};
+				my $bandset = $band->{set}->intersect( $ideogram->{set} );
+				next unless $bandset->cardinality;
+				my $bt = seek_parameter("band_transparency",$datum,@param_path);
+				my $fillcolor = $bt ? sprintf("%s_a%d", $band->{color}, $bt ) : $band->{color};
+				#printdumper($band) if $band->{name} eq "p31.1" && $band->{chr} eq "hs1";
+				my $url = seek_parameter("url",$band) || $CONF{ideogram}{band_url};
+				$url = format_url(url=>$url,param_path=>[$band->{options}||{},$band]);
+				slice(
+							image       => $IM,
+							start       => $bandset->min,
+							end         => $bandset->max,
+							chr         => $chr,
+							radius_from => get_ideogram_radius($ideogram) -	$DIMS->{ideogram}{ $ideogram->{tag} }{thickness},
+							radius_to  => get_ideogram_radius($ideogram),
+							edgecolor  => seek_parameter("band_stroke_color|stroke_color",$datum,@param_path),
+							edgestroke => seek_parameter("band_stroke_thickness",$datum,@param_path),
+							mapoptions => { url=>$url },
+							fillcolor => seek_parameter("fill_bands",$datum,@param_path) ? $fillcolor : undef
+						 );
+			}
+			if (seek_parameter("show_label",$datum,@param_path)) {
+				my $font_role = "ideogram label";
+				# Circos font key, such as 'default', or 'condensed'
+				my $font_key  = seek_parameter("label_font",$datum,@param_path) || fetch_conf("default_font") || "default";
+				# font definition, which includes file name and font name, such as /path/to/symbols.ttf,Symbols
+				my $font_def  = get_font_def_from_key($font_key,$font_role);
+				# file name component of the definition
+				my $font_file = get_font_file_from_key($font_key,$font_role);
+				# font name component of the definition
+				my $font_name = get_font_name_from_file($font_file);
+				my $label  = $KARYOTYPE->{$chr}{chr}{label};
+				if ( fetch_conf("ideogram","label_with_tag") ) {
+					$label .= $tag if $tag ne $chr && $tag !~ /__/;
 				}
-				if ( $link->{data}[1]{rev} ) {
-					( $start2, $end2 ) = ( $end2, $start2 );
+				if ( my $fmt = seek_parameter("label|label_format",$datum,@param_path) ) {
+					#if ( $fmt =~ /^eval\(\s*(.*)\s*\)\s*$/ ) {
+					#my $expr = $1;
+					$label = Circos::Expression::eval_expression( {data=>[$ideogram]}, $fmt );
+					#} else {
+					#$label = $fmt;
+					#}
 				}
-				
-				my $force_flat  = seek_parameter("flat",$link, @param_path_link);
-				my $force_twist = seek_parameter("twist",$link, @param_path_link);
-				
-				if ($force_flat || $force_twist) {
-					my %list = (
-											s1 => [$start1, getanglepos($start1, $link->{data}[0]{chr}) ],
-											e1 => [$end1,   getanglepos($end1,   $link->{data}[0]{chr}) ],
-											s2 => [$start2, getanglepos($start2, $link->{data}[1]{chr}) ],
-											e2 => [$end2,   getanglepos($end2,   $link->{data}[1]{chr}) ],
-										 );
-					my @ends = sort { $list{$a}[1] <=> $list{$b}[1] } keys %list;
-					my $ends = join( $EMPTY_STR, @ends );
-					if ($force_flat) {
-						if ( $ends =~ /s1e2|s2e1|e1s2|e2s1/ ) {
-							( $start1, $end1, $start2, $end2 ) = ( $start1, $end1, $end2, $start2 );
-						}
-					} elsif ($force_twist) {
-						if ( $ends !~ /s1e2|s2e1|e1s2|e2s1/ ) {
-							( $start1, $end1, $start2, $end2 ) = ( $start1, $end1, $end2, $start2 );
-						}
+				my $label_case = seek_parameter("label_case",$datum,@param_path) || $EMPTY_STR;
+				if ($label_case eq "upper") {
+					$label = uc $label;
+				} elsif ($label_case eq "lower") {
+					$label = lc $label;
+				}
+				my $label_size = unit_strip( seek_parameter("label_size",$datum,@param_path), 'p' );
+				my ($label_width,$label_height) = get_label_size(font_file=>$font_file,
+																												 size=>$label_size,
+																												 text=>$label);
+				my $pos          = get_set_middle( $ideogram->{set} );
+				my $textangle    = get_angle_pos( $pos, $chr );
+				my $svg_anchor   = "end";
+
+				my $label_parallel = seek_parameter("label_parallel",$datum,@param_path);
+				# centers the label radially - useful only when the label is radial, not parallel
+				my $label_radius   = unit_parse(seek_parameter("label_radius",$datum,@param_path));
+				#printinfo($tag,$label_radius,$DIMS->{ideogram}{$tag}{label}{radius});
+
+				if (seek_parameter("label_center",$datum,@param_path)) {
+					my $offset;
+					if($label_parallel) {
+						$offset = $label_height;
+					} else {
+						$offset = $label_width;
 					}
+					$svg_anchor = "middle";
+					$label_radius -= $offset/2;
 				}
-		
-				my $url = seek_parameter("url",@i_param_path_link);
-		
-				$url = format_url(url=>$url,param_path=>[@i_param_path_link,
+
+				my ($offset_angle,$offset_radius) = textoffset($textangle,
+																											 $label_radius,
+																											 #$DIMS->{ideogram}{$tag}{label}{radius},
+																											 $label_width, $label_height,
+																											 0,
+																											 $label_parallel);
+				my $radius       = $offset_radius + $label_radius; # $DIMS->{ideogram}{$tag}{label}{radius};
+				my $pangle       = getanglepos( $pos, $chr );
+				my $pangle_shift = $label_parallel ? $RAD2DEG * ($label_width/2/$radius) : 0;
+
+				#
+				#   270 | -90
+				#       |
+				#  180 --- 0
+				#       |
+				#       90
+				#
+
+				if ($pangle > 180 || $pangle < 0) {
+					$pangle_shift = -$pangle_shift;
+				}
+
+				my $label_color = seek_parameter("label_color",$datum,@param_path) || fetch_conf("default_color") || 'black';
+
+				Circos::Text::draw_text (
+																 text        => $label,
+																 font        => seek_parameter("label_font",$datum,@param_path) || fetch_conf("default_font") || "default",
+																 size        => $label_size,
+																 color       => $label_color,
+																 angle       => $textangle,
+																 is_rotated  => seek_parameter("label_rotated",$datum,@param_path),
+																 is_parallel => $label_parallel,
+																 radius      => $label_radius, # $DIMS->{ideogram}{ $tag }{label}{radius},
+																 guides      => fetch_conf("guides","object","ideogram_label") || fetch_conf("guides","object","all"),
+																 svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$ideogram) },
+																 mapoptions  => { url  => $url },
+																);
+			}
+
+			# draw scale ticks
+			if (seek_parameter("show_ticks",$datum,@param_path,\%CONF)) {
+				start_timer("ideograms_ticks_draw");
+				draw_ticks(ideogram => $ideogram);
+				stop_timer("ideograms_ticks_draw");
+			}
+
+			# ideogram highlights
+			Circos::Track::Highlight::draw_highlights( \@highlight_tracks,
+																								 $track_default->{highlights},
+																								 $chr, 
+																								 $ideogram->{set}, 
+																								 $ideogram,
 																								 {
-																									start1=>$start1,
-																									start2=>$start2,
-																									end1=>$end1,
-																									end2=>$end2,
-																									size1=>$end1-$start1,
-																									size2=>$end2-$start2,
-																									start=>round(($start1+$end1)/2),
-																									end=>round(($start2+$end2)/2)}]);
-		
-				ribbon(mapoptions => {url=> $url},
-							 image      => $IM,
-							 start1     => $start1,
-							 end1       => $end1,
-							 chr1       => $link->{data}[0]{chr},
-							 start2     => $start2,
-							 end2       => $end2,
-							 chr2       => $link->{data}[1]{chr},
-							 radius1    => $radius1,
-							 radius2    => $radius2,
-							 edgecolor  => seek_parameter("stroke_color", @i_param_path_link),
-							 edgestroke => unit_strip(seek_parameter("stroke_thickness", @i_param_path_link)),
-							 fillcolor  => seek_parameter( "color", @i_param_path_link ),
-							 pattern    => seek_parameter( "pattern", @i_param_path_link ),
-							 bezier_radius         => seek_parameter("bezier_radius", @i_param_path_link),
-							 perturb_bezier_radius => seek_parameter("perturb_bezier_radius", @i_param_path_link),
-							 bezier_radius_purity  => seek_parameter("bezier_radius_purity", @i_param_path_link),
-							 perturb_bezier_radius_purity => seek_parameter("perturb_bezier_radius_purity"),
-							 crest         => seek_parameter( "crest", @i_param_path_link ),
-							 perturb       => $perturb,
-							 perturb_crest => seek_parameter("perturb_crest", @i_param_path_link),
-							);
+																									ideogram => 1, layer_with_data => 0 } );
 
-	    } elsif ( defined seek_parameter( "bezier_radius", @i_param_path_link ) ) {
-				#printinfo(seek_parameter( "bezier_radius", @i_param_path_link));
-				my @bezier_control_points = 
-					bezier_control_points(
-																pos1 => get_set_middle($link->{data}[0]{set}),
-																chr1 => $link->{data}[0]{chr},
-																pos2 => get_set_middle($link->{data}[1]{set}),
-																chr2 => $link->{data}[1]{chr},
-																radius1 => $radius1,
-																radius2 => $radius2,
-																bezier_radius => seek_parameter("bezier_radius", @i_param_path_link),
-																perturb_bezier_radius => seek_parameter("perturb_bezier_radius", @i_param_path_link),
-																bezier_radius_purity => seek_parameter("bezier_radius_purity", @i_param_path_link),
-																perturb_bezier_radius_purity => seek_parameter("perturb_bezier_radius_purity",@i_param_path_link),
-																crest => seek_parameter( "crest", @i_param_path_link ),
-																perturb => $perturb,
-																perturb_crest => seek_parameter("perturb_crest", @i_param_path_link)
-															 );
-
-				my $num_bezier_control_points = @bezier_control_points;
-				my @bezier_points = bezier_points(@bezier_control_points);
-
-				printdebug_group("bezier", "beziercontrols",int(@bezier_control_points), @bezier_control_points );
-
-				my $svg;
-				if ( $num_bezier_control_points == 10 && $SVG_MAKE ) {
-					# bezier control points P0..P4
-					# P0 - start
-					# P1,P2,P3 - controls
-					# P4 - end
-					# 
-					# intersection between line P0-P1 and
-					# perpendicular from P2
-					# 
-					my ( $x1, $y1, $u1 ) = getu( @bezier_control_points[ 0 .. 5 ] );
-					# 
-					# intersection between line P3-P4 and
-					# perpendicular from P2
-					# 
-					my ( $x2, $y2, $u2 ) = getu( @bezier_control_points[ 6 .. 9 ], @bezier_control_points[ 4, 5 ] );
-					my @c1 = @bezier_control_points[ 2, 3 ];
-					my @c2 = @bezier_control_points[ 4, 5 ];
-					my @c3 = @bezier_control_points[ 6, 7 ];
-					my $point_string = "%.1f,%.1f " x ( @bezier_points - 1 );
-					$svg = sprintf(
-												 qq{<path d="M %.1f,%.1f L $point_string " style="stroke-opacity: %f; stroke-width: %.1f; stroke: rgb(%d,%d,%d); fill: none" />},
-												 ( map { @$_ } @bezier_points[ 0, 1 ] ),
-												 ( map { @$_ } @bezier_points[ 2 .. @bezier_points - 1 ] ),
-												 rgb_color_opacity(seek_parameter("color",@i_param_path_link)),
-												 unit_strip(seek_parameter("thickness", @i_param_path_link),"p"),
-												 rgb_color(seek_parameter("color", @i_param_path_link)),
-												);
-				} elsif ( $num_bezier_control_points == 8 && $SVG_MAKE ) {
-					my $point_string = join( $SPACE, map { sprintf( "%.1f", $_ ) } @bezier_control_points[ 2 .. $num_bezier_control_points - 1 ] );
-					$svg = sprintf(
-												 qq{<path d="M %.1f,%.1f C %s" style="stroke-opacity: %f; stroke-width: %.1f; stroke: rgb(%d,%d,%d); fill: none" />},
-												 @bezier_control_points[ 0, 1 ],
-												 $point_string,
-												 rgb_color_opacity(seek_parameter("color",@i_param_path_link)),
-												 unit_strip(seek_parameter("thickness", @i_param_path_link),"p"),
-												 rgb_color(seek_parameter("color", @i_param_path_link)),
-												);
-				} elsif ( $num_bezier_control_points == 6 && $SVG_MAKE ) {
-					$svg = sprintf(
-												 qq{<path d="M %.1f,%.1f Q %.1f,%.1f %.1f,%.1f" style="stroke-opacity: %f; stroke-width: %.1f; stroke: rgb(%d,%d,%d); fill: none" />},
-												 @bezier_control_points,
-												 rgb_color_opacity(seek_parameter("color",@i_param_path_link)),
-												 unit_strip(seek_parameter("thickness", @i_param_path_link),"p"),
-												 rgb_color(seek_parameter("color", @i_param_path_link)),
-												);
-				}
-				if ($SVG_MAKE) {
-					printsvg($svg);
-				}
-				if ($PNG_MAKE) {
-					Circos::PNG::draw_bezier(points=>\@bezier_points, 
-																	 thickness=>unit_strip(seek_parameter("thickness",@i_param_path_link),"p"), 
-																	 color=>seek_parameter("color",@i_param_path_link ));
-				}
-	    } else {
-				my ( $a1, $a2 ) = (getanglepos(get_set_middle($link->{data}[0]{set}),$link->{data}[0]{chr}),
-													 getanglepos(get_set_middle($link->{data}[1]{set}),$link->{data}[1]{chr}));
-				my ( $x1, $y1 ) = getxypos( $a1, $linkradius );
-				my ( $x2, $y2 ) = getxypos( $a2, $linkradius );
-				draw_line( [ $x1, $y1, $x2, $y2 ],
-									 seek_parameter( "thickness", @i_param_path_link ),
-									 seek_parameter( "color",     @i_param_path_link )
-								 );
-	    }
-		}
-		printsvg(qq{</g>}) if $SVG_MAKE;
-	}
-
-	#my $dataset;								# delete
-
-	$track_default->{plots} = parse_parameters( fetch_conf("plots"), "plot" );
-
-	my @plot_tracks = map { parse_parameters($_, "plot", 0) }  Circos::Track::make_tracks( fetch_conf("plots","plot"),
-																																												 $track_default->{plots} );
-	# keep only those tracks which are shown
-	@plot_tracks    = grep(show($_,$track_default->{plots}), @plot_tracks);
-	
-	for my $track ( @plot_tracks ) {
-		my @param_path = ( $track, $track_default->{plots} );
-		my $track_type = seek_parameter( "type", @param_path );
-		if (! track_type_ok($track_type)) {
-			fatal_error("track","bad_type",$track_type,join(",",get_track_types()),Dumper($track));
-		}
-		my $track_id   = $track->{id};
-		my $track_file = locate_file( file => seek_parameter("file",@param_path), name=>"$track_type track id $track_id");
-			
-		printdebug_group("summary","reading data and processing $track_type track id $track_id from",$track_file);
-			
-		my $track_file_param = { record_limit     => seek_parameter( "record_limit", @param_path ),
-														 minsize          => seek_parameter( "minsize", @param_path ),
-														 padding          => seek_parameter( "padding", @param_path ),
-														 skip_run         => seek_parameter( "skip_run", @param_path ),
-														 min_value_change => seek_parameter( "min_value_change", @param_path ),
-													 };
-			
-		if ($track_type eq "histogram") {
-			$track_file_param->{param}{fill_color} = seek_parameter( "fill_color", @param_path );
-	    $track_file_param->{param}{thickness}  = seek_parameter( "thickness", @param_path );
-	    $track_file_param->{param}{color}      = seek_parameter( "color", @param_path );
-	    $track_file_param->{sort_bin_values}   = seek_parameter( "sort_bin_values", @param_path ),
-		}
-
-		$track->{__data} = Circos::IO::read_data_file($track_file, $track_type, $track_file_param,$KARYOTYPE);
-
-		# some default track values, which I constantly forget to define
-		if ( $track_type eq "text" ) {
-	    $track->{rpadding} = "0p" if ! defined $track->{rpadding};
-	    $track->{padding}  = "0p" if ! defined $track->{padding};
-		}
-
-		my @rules = Circos::Rule::make_rule_list( $track->{rules}{rule} );
-		# pick out only those rules that are used
-		@rules = grep( use_set($_,$track->{rules}), @rules );
-
-		start_timer("datarules");
-		Circos::Rule::apply_rules_to_track($track,\@rules,\@param_path) if @rules;
-		stop_timer("datarules");
-
-		$track->{__data} = [ grep( show($_), @{$track->{__data}} ) ];
-
-		# register this ideogram with the track
-		for my $datum (@{$track->{__data}}) {
-			for my $data_point (@{$datum->{data}}) {
-				my $i = get_ideogram_idx($data_point->{start},$data_point->{chr});
-				$track->{ideogram}{$i}++ if defined $i;
+			# ideogram outline - stroke only, not filled
+			if (seek_parameter("stroke_thickness",$datum,@param_path)) {
+				slice(
+							image       => $IM,
+							start       => $start,
+							end         => $end,
+							chr         => $chr,
+							radius_from => get_ideogram_radius($ideogram) -	$DIMS->{ideogram}{ $ideogram->{tag} }{thickness},
+							radius_to   => get_ideogram_radius($ideogram),
+							edgecolor   => seek_parameter("stroke_color",$datum,@param_path),
+							edgestroke  => seek_parameter("stroke_thickness",$datum,@param_path),
+							fillcolor   => undef,
+						 );
 			}
 		}
-
-		$track->{z} = seek_parameter("z",@param_path) || 0;
-		# compute z values for each data point
-		for my $datum ( @{$track->{__data}} ) {
-	    $datum->{param}{z} = seek_parameter("z",$datum) || 0;
-		}
-	}
     
-	my $plotid = 0;
-
-	for my $track ( sort {$a->{z} <=> $b->{z}} @plot_tracks ) {
-
-		start_timer("track_preprocess");
-		my @param_path = ( $track, $track_default->{plots} );
-		my $this_track_z = seek_parameter("z",@param_path) || 0;
-
-		printsvg(qq{<g id="plot$plotid">}) if $SVG_MAKE;
-
-		my $track_data = $track->{__data};
-		my $track_type = seek_parameter( "type", @param_path );
-
-		# global properties of the plot
-		my $orientation           = seek_parameter( "orientation", @param_path );
-		my $orientation_direction = match_string($orientation,"in") ? -1 : 1;
-	
-		my $plot;
-		my $r0 = round(unit_parse( seek_parameter( "r0", @param_path ) ));
-		my $r1 = round(unit_parse( seek_parameter( "r1", @param_path ) ));
-
-		printdebug_group("summary","drawing $track_type track","z",$track->{z},
-										 basename($track->{file}),
-										 defined $orientation ? "orient $orientation" : "");
-
-		my ( @tilelayers, $margin );
-		if ( $track_type eq "tile" ) {
-	    # the margin must be in bases
-	    $margin = seek_parameter( "margin", @param_path );
-	    unit_validate( $margin, "margin", qw(u b) );
-	    $margin    = unit_convert( from => $margin, to => "b" ) ; #, factors => { ub => $CONF{chromosomes_units} } ) ;
-	    my $layers = seek_parameter("layers",@param_path);
-	    for my $ideogram (@IDEOGRAMS) {
-				my $idx = $ideogram->{idx};
-				$tilelayers[$idx] =	[ map { { set => Set::IntSpan->new(), idx => $_ } } ( 0..$layers-1 ) ];
-	    }
-		}
-
-		my $plot_min = seek_parameter( "min", @param_path );
-		my $plot_max = seek_parameter( "max", @param_path );
-
-		if(@$track_data > fetch_conf("max_points_per_track")) {
-			fatal_error("track","max_number",int(@$track_data),$track_type,$track->{file},fetch_conf("max_points_per_track"));
-		}
-
-		# get some statistics for certain plot types, so that we
-		# can set default if parameters are not defined
-		if ( $track_type =~ /scatter|line|histogram|heatmap/ && ( !defined $plot_min || !defined $plot_max ) ) {
-	    my @values;
-	    for my $datum ( @$track_data ) {
-				next unless show($datum);
-				push @values, $datum->{data}[0]{value};
-	    }
-	    my $min   = min(@values);
-	    my $max   = max(@values);
-	    $plot_min = ($min||0) if ! defined $plot_min;
-	    $plot_max = ($max||0) if ! defined $plot_max;
-	    printdebug_group("layer","track $track_type $track->{id} auto min/max",$plot_min,$plot_max);
-		}
-
-		if ( defined $plot_max && defined $plot_min && $plot_max < $plot_min ) {
-	    fatal_error("track","min_larger_than_max",$plot_min,$plot_max);
-		}
-
-		stop_timer("track_preprocess");
-
-		if ( $track_type =~ /text/ ) {
-	    start_timer("track_text_place");
-	    # 
-	    # number of discrete steps in a degree
-	    #
-	    # at r1, number of pixels per degree is
-	    # 
-	    #   2 * r1 * pi / 360 
-	    #
-	    # the resolution is given as
-	    #
-	    #   pixel_sub_sampling * pixels_in_degree
-	    # 
-	    # subsampling should be at least 2
-	    # 
-	    my $pixel_sub_sampling = $CONF{text_pixel_subsampling} || 2;
-	    my $pixels_in_degree   = $r1 * $TWOPI / 360;
-	    my $angular_resolution = seek_parameter( "resolution", @param_path ) || $pixel_sub_sampling * $pixels_in_degree;
-
-	    # label link dimensions - key
-	    #
-	    #      00112223344 (link dims)
-	    # LABEL  --\
-	    #           \
-	    #            \--  LABEL
-	    #
-	    #
-	    # assign immutable label properties
-	    # - pixel width, height
-	    # - original angular position
-	    # - angular width at base
-	    #
-	    # also tally up the number of labels for an angular bin
-
-	    printdebug_group("summary","placing text track",seek_parameter("file",@param_path));
-	    printdebug_group("summary","... see progress with -debug_group text");
-	    printdebug_group("summary","... see placement summary with -debug_group textplace");
-	    
-	    for my $datum ( @$track_data ) {
-				start_timer("track_text_preprocess");
-				next unless show($datum,@param_path);
-				my $data_point = $datum->{data}[0];
-				my $font_role  = "text track";
-				my $font_key   = seek_parameter( "label_font", $datum, @param_path ) || fetch_conf("default_font") || "default";
-				my $font_def   = get_font_def_from_key($font_key,"text track");
-				my $font_file  = get_font_file_from_key($font_key,"text track");
-
-				$data_point->{size} = unit_strip( unit_validate( seek_parameter( "label_size", $datum, @param_path ),
-																												 "plots/plot/label_size",
-																												 qw(p n)
-																											 ));
-		
-				my ( $label_width, $label_height ) = get_label_size( font_file => $font_file,
-																														 size      => $data_point->{size},
-																														 text      => $data_point->{value} );
-		
-				# w0 h0 - width and height of label (irrespective of rotation)
-				# w  h  - width at base (parallel to circle) of label and height (radial)
-				# dimr  - size along radial direction (perpendicular to ideogram)
-				# dima  - size along angular direction (parallel to ideogram)
-				@{$data_point}{qw(w0 h0)}     = ( $label_width, $label_height );
-				@{$data_point}{qw(w h)}       = ( $label_width, $label_height );
-				@{$data_point}{qw(dimr dima)} = ( $label_width, $label_height );
-				if (0 && defined_and_zero( seek_parameter( "label_rotate", $datum, @param_path ) )
-						||
-						seek_parameter("label_tangential", $datum, @param_path)) {
-					# label is parallel to ideogram
-					@{$data_point}{qw(w h)}       = @{$data_point}{qw(h0 w0)};
-					@{$data_point}{qw(dimr dima)} = @{$data_point}{qw(h0 w0)};
-					$data_point->{tangential}     = 1;
-					$data_point->{parallel}       = 1;
-					$data_point->{radial}         = 0;
-					$data_point->{rotated}        = 0;
-					#($label_width,$label_height) = ($label_height,$label_width);
-				} elsif (0) { 
-					# label is radial
-					@{$data_point}{qw(w h)}       = @{$data_point}{qw(w0 h0)};
-					@{$data_point}{qw(dimr dima)} = @{$data_point}{qw(w0 h0)};
-					$data_point->{tangential}     = 0;
-					$data_point->{parallel}       = 0;
-					$data_point->{radial}         = 1;
-					$data_point->{rotated}        = 1;
+    for my $ideogram (@IDEOGRAMS) {
+			next unless show($ideogram);
+			if ( $ideogram->{chr} eq $ideogram->{next}{chr} || 
+					 $ideogram->{break}{start} || $ideogram->{break}{end} ) {
+				if (@IDEOGRAMS > 1 || $ideogram->{display_idx} < $ideogram->{next}{display_idx}) {
+					draw_axis_break($ideogram);
 				}
-		
-				# radial padding is along radial direction - can
-				# be absolute (p) or relative (r, to label width)
-				#
-				# computing padding here because it depends on the
-				# label size
-				$data_point->{rpadding} = unit_convert(
-																							 from    => unit_validate( seek_parameter( "rpadding", $datum, @param_path ), "plots/plot/rpadding", qw(r p) ),
-																							 to      => "p",
-																							 factors => { rp => $data_point->{dimr} }
-																							);
+			}
+    }
 
-				if ( seek_parameter( "show_links", @param_path ) ) {
-					my @link_dims = split( /[, ]+/, seek_parameter( "link_dims", @param_path ) );
-					@link_dims = map { unit_convert(
-																					from    => unit_validate( $_, "plots/plot/link_dims", qw(r p) ),
-																					to      => "p",
-																					factors => { rp => $data_point->{dimr} }
-																				 ) } @link_dims;
-					my $link_orientation = seek_parameter( "link_orientation", @param_path ) || "in";
-					if ($link_orientation eq "out") {
-						$data_point->{rpadding} -= sum(@link_dims);
-					} else {
-						$data_point->{rpadding} += sum(@link_dims);
-						#printinfo(sum(@link_dims));
+    stop_timer("ideograms_draw");
+
+    printsvg(qq{</g>}) if $SVG_MAKE;
+
+    #Circos::Ideogram::report_chromosomes($KARYOTYPE);exit;
+
+    ################################################################
+    #
+    # Process Links
+    #
+    # Links are stored just like any other data structure, like histograms, but have
+    # two data elements.
+    #
+    # $data->{links}{param}              -> global link parameters from <links> block
+    # $data->{links}{track}[i]           -> individual link track
+    # $data->{links}{track}[i]{param}          parameters
+    # $data->{links}{track}[i]                 list of links
+    # $data->{links}{track}[i]{data}[0]           links start
+    # $data->{links}{track}[i]{data}[1]           links end
+    # $data->{links}{track}[i]{param}             link parameters
+
+    # First, initialize the global links parameters from <links> block, and
+    # then intialize each link track.
+    $track_default->{links} = parse_parameters( fetch_conf("links"), "link" );
+
+    my $link_names;
+    my @t = Circos::Track::make_tracks( fetch_conf("links","link"), 
+																				$track_default->{links},
+																				"link");
+    #printdumper(\@t);exit;
+    my @link_tracks = map { parse_parameters($_, "link", 0) } @t;
+    #printdumper(\@link_tracks);exit;
+    @link_tracks    = grep(show($_,$track_default->{links}), @link_tracks);
+
+    for my $track ( @link_tracks ) {
+
+			# Path to search for parameters: first the <link> block, then <links> block.
+			my @param_path = ( $track, $track_default->{links} );
+			my $track_id   = $track->{id};
+			#printdumper($track);exit;
+			my $track_file = locate_file( file => seek_parameter("file",@param_path), name=>"link $track_id");
+			
+			printdebug_group("summary","process",$track->{id},"link",$track_file);
+			
+			$track->{__data} = Circos::IO::read_data_file($track_file,"link",
+																										{ addset       => 1,
+																											minsize      => seek_parameter( 'minsize', @param_path ),
+																											file_rx      => seek_parameter( 'file_rx', @param_path ),
+																											padding      => seek_parameter( 'padding', @param_path ),
+																											record_limit => seek_parameter( 'record_limit', @param_path )
+																										},
+																										$KARYOTYPE,
+																									 );
+
+			# apply any rules to this set of links
+			my @rules = Circos::Rule::make_rule_list( $track->{rules}{rule} );
+			# pick out only those rules that are used
+			@rules = grep( use_set($_,$track->{rules}), @rules );
+
+			start_timer("datarules");
+			Circos::Rule::apply_rules_to_track($track,\@rules,\@param_path) if @rules;
+			stop_timer("datarules");
+
+			$track->{__data} = [ grep( show($_), @{$track->{__data}} ) ];
+
+			# z-depth for this track
+			$track->{z} = seek_parameter("z",@param_path) || 0;
+			# compute z values for each link
+			for my $link ( @{$track->{__data}} ) {
+				$link->{param}{z} = seek_parameter("z",$link) || 0;
+			}
+    }
+
+    my $link_report_seen;
+
+    for my $track ( sort { $a->{z} <=> $b->{z} }  @link_tracks ) {
+
+			my @param_path = ( $track, $track_default->{links} );
+			printsvg(qq{<g id="$track->{id}">}) if $SVG_MAKE;
+
+			printdebug_group("summary","drawing","link",$track->{id},"z",$track->{z});
+
+			my $track_data = $track->{__data};
+
+			if (@$track_data > fetch_conf("max_links")) {
+				fatal_error("links","max_number",int(@$track_data),$track->{file},fetch_conf("max_links"));
+			}
+
+		LINK:
+			for my $link ( sort { $a->{param}{z} <=> $b->{param}{z} } @$track_data ) {
+				my @param_path_link = ( $link, @param_path );
+
+				# Check whether the link falls within its ideograms. If not, skip, trim or quit.
+				# Also check whether position needs to be updated.
+				for my $link_end ( @{ $link->{data} } ) {
+					my $chr = $link_end->{chr};
+					if ($link_end->{param}{_modpos}) {
+						$link_end->{set} = Set::IntSpan->new(sprintf("%d-%d",$link_end->{start},$link_end->{end}));
 					}
+					# undef is returend if the link is completely beyond the ideogram, otherwise
+					# a clipped set
+					my $set_checked = check_data_range($link_end->{set},"link",$chr);
+					next LINK if ! defined $set_checked;
+					$link_end->{set} = $set_checked;
 				}
-		
-				# original angular position, radius
-				# - inner layer radius includes padding for link lines
-				my $angle  = getanglepos( ( $data_point->{start} + $data_point->{end} ) / 2, $data_point->{chr} );
+				#printdumper($link);
+
+				my $linkradius = unit_parse( seek_parameter( "radius", @param_path_link ) || 0) +
+					unit_parse( seek_parameter( "offset", @param_path_link ) || 0);
+
+				my @i_param_path_link = @param_path_link;
+				my $perturb = seek_parameter( "perturb", @i_param_path_link );
+				my $ideogram1 = get_ideogram_by_idx(get_ideogram_idx($link->{data}[0]{set}->min,
+																														 $link->{data}[0]{chr}));
+				my $ideogram2 = get_ideogram_by_idx(get_ideogram_idx($link->{data}[1]{set}->min,
+																														 $link->{data}[1]{chr}));
+	    
+				my $radius1 = unit_parse( seek_parameter( "radius1|radius", @i_param_path_link ), $ideogram1 ) ;
+				#	+	unit_parse( seek_parameter( "offset", @param_path_link ) || 0 , $ideogram1) ;
+				my $radius2 = unit_parse( seek_parameter( "radius2|radius", @i_param_path_link ), $ideogram2 ) ;
+				#+	unit_parse( seek_parameter( "offset", @param_path_link ) || 0 , $ideogram2) ;
+
+				#printinfo(seek_parameter("radius1|radius",@i_param_path_link));
+				#printinfo($radius1,$radius2);
+
+				#printinfo(seek_parameter("bezier_radius", @i_param_path_link));
+				#printdumper(@param_path);
+
+				if ( seek_parameter( "ribbon", @i_param_path_link ) ) {
+
+					my ( $start1, $end1 ) = (max($link->{data}[0]{set}->min,$ideogram1->{set}->min),
+																	 min($link->{data}[0]{set}->max,$ideogram1->{set}->max));
+					my ( $start2, $end2 ) = (max($link->{data}[1]{set}->min,$ideogram2->{set}->min),
+																	 min($link->{data}[1]{set}->max,$ideogram2->{set}->max));
 				
-				# radius, uncorrected for ideogram radial position
-				my $radius = $r0;
+					if ( $link->{data}[0]{rev} ) {
+						( $start1, $end1 ) = ( $end1, $start1 );
+					}
+					if ( $link->{data}[1]{rev} ) {
+						( $start2, $end2 ) = ( $end2, $start2 );
+					}
 
-				# correct radius to ideogram radial position 0.63-2
-				my $ideogram_idx = get_ideogram_idx( $data_point->{start}, $data_point->{chr} );
-				my $ideogram     = get_ideogram_by_idx($ideogram_idx);
+					my $force_flat  = seek_parameter("flat",$link, @param_path_link);
+					my $force_twist = seek_parameter("twist",$link, @param_path_link);
 
-				$radius    = 	unit_parse( seek_parameter( "r0", @param_path ), $ideogram );
-				#$r0 = unit_parse( seek_parameter( "r0", @param_path ), $ideogram );
-				#$r1 = unit_parse( seek_parameter( "r1", @param_path ), $ideogram );
+					if ($force_flat || $force_twist) {
+						my %list = (
+												s1 => [$start1, getanglepos($start1, $link->{data}[0]{chr}) ],
+												e1 => [$end1,   getanglepos($end1,   $link->{data}[0]{chr}) ],
+												s2 => [$start2, getanglepos($start2, $link->{data}[1]{chr}) ],
+												e2 => [$end2,   getanglepos($end2,   $link->{data}[1]{chr}) ],
+											 );
+						my @ends = sort { $list{$a}[1] <=> $list{$b}[1] } keys %list;
+						my $ends = join( $EMPTY_STR, @ends );
+						if ($force_flat) {
+							if ( $ends =~ /s1e2|s2e1|e1s2|e2s1/ ) {
+								( $start1, $end1, $start2, $end2 ) = ( $start1, $end1, $end2, $start2 );
+							}
+						} elsif ($force_twist) {
+							if ( $ends !~ /s1e2|s2e1|e1s2|e2s1/ ) {
+								( $start1, $end1, $start2, $end2 ) = ( $start1, $end1, $end2, $start2 );
+							}
+						}
+					}
 
-				@{$data_point}{qw(angle radius)} = ( $angle, $radius );
-		
-				# angular height, compensated for height
-				# reduction, at the start (inner) and end (outer)
-				# of the label; ah_outer < ah_inner because radius
-				# of the former is larger
+					my $url   = seek_parameter("url",@i_param_path_link);
 
-				$data_point->{ah_inner} = $RAD2DEG * $data_point->{dima} / $data_point->{radius};
-				$data_point->{ah_outer} = $RAD2DEG * $data_point->{dima} / ( $data_point->{radius} + $data_point->{dimr} );
-		
-				# angular height set, in units of 1/angular_resolution, at the foot (inner) and
-				# top (outer) of the label
-		
-				for my $x (qw(inner outer)) {
-					$data_point->{"aset_$x"} = span_from_pair(
-																										map { angle_to_span( $_, $angular_resolution ) } (
-																																																			$data_point->{angle} - $data_point->{"ah_$x"} / 2,
-																																																			$data_point->{angle} + $data_point->{"ah_$x"} / 2
-																																																		 ));
+					$url = format_url(url=>$url,
+														param_path=>[@i_param_path_link,
+																				 {
+																					start1=>$start1,
+																					start2=>$start2,
+																					end1=>$end1,
+																					end2=>$end2,
+																					size1=>$end1-$start1,
+																					size2=>$end2-$start2,
+																					start=>round(($start1+$end1)/2),
+																					end=>round(($start2+$end2)/2)
+																				 }
+																				]
+													 );
+
+					ribbon(mapoptions => { url  => $url},
+								 svg        => { attr => seek_parameter_glob("^svg.*",qr/^svg/,@i_param_path_link)},
+								 image      => $IM,
+								 start1     => $start1,
+								 end1       => $end1,
+								 chr1       => $link->{data}[0]{chr},
+								 start2     => $start2,
+								 end2       => $end2,
+								 chr2       => $link->{data}[1]{chr},
+								 radius1    => $radius1,
+								 radius2    => $radius2,
+								 edgecolor  => seek_parameter("stroke_color", @i_param_path_link),
+								 edgestroke => unit_strip(seek_parameter("stroke_thickness", @i_param_path_link)),
+								 fillcolor  => seek_parameter( "color", @i_param_path_link ),
+								 pattern    => seek_parameter( "pattern", @i_param_path_link ),
+								 bezier_radius         => seek_parameter("bezier_radius", @i_param_path_link),
+								 perturb_bezier_radius => seek_parameter("perturb_bezier_radius", @i_param_path_link),
+								 bezier_radius_purity  => seek_parameter("bezier_radius_purity", @i_param_path_link),
+								 perturb_bezier_radius_purity => seek_parameter("perturb_bezier_radius_purity"),
+								 crest         => seek_parameter( "crest", @i_param_path_link ),
+								 perturb       => $perturb,
+								 perturb_crest => seek_parameter("perturb_crest", @i_param_path_link),
+								);
+
+				} elsif ( defined seek_parameter( "bezier_radius", @i_param_path_link ) ) {
+					#printinfo(seek_parameter( "bezier_radius", @i_param_path_link));
+					my @bezier_control_points = 
+						bezier_control_points(
+																	pos1 => get_set_middle($link->{data}[0]{set}),
+																	chr1 => $link->{data}[0]{chr},
+																	pos2 => get_set_middle($link->{data}[1]{set}),
+																	chr2 => $link->{data}[1]{chr},
+																	radius1 => $radius1,
+																	radius2 => $radius2,
+																	bezier_radius => seek_parameter("bezier_radius", @i_param_path_link),
+																	perturb_bezier_radius => seek_parameter("perturb_bezier_radius", @i_param_path_link),
+																	bezier_radius_purity => seek_parameter("bezier_radius_purity", @i_param_path_link),
+																	perturb_bezier_radius_purity => seek_parameter("perturb_bezier_radius_purity",@i_param_path_link),
+																	crest => seek_parameter( "crest", @i_param_path_link ),
+																	perturb => $perturb,
+																	perturb_crest => seek_parameter("perturb_crest", @i_param_path_link)
+																 );
+
+					my $num_bezier_control_points = @bezier_control_points;
+					my @bezier_points = bezier_points(@bezier_control_points);
+
+					printdebug_group("bezier", "beziercontrols",int(@bezier_control_points), @bezier_control_points );
+
+					my $svg;
+					my $svg_attr = seek_parameter_glob("^svg.*",qr/^svg/,@i_param_path_link);
+					if ( $num_bezier_control_points == 10 && $SVG_MAKE ) {
+						# bezier control points P0..P4
+						# P0 - start
+						# P1,P2,P3 - controls
+						# P4 - end
+						# 
+						# intersection between line P0-P1 and
+						# perpendicular from P2
+						# 
+						my ( $x1, $y1, $u1 ) = getu( @bezier_control_points[ 0 .. 5 ] );
+						# 
+						# intersection between line P3-P4 and
+						# perpendicular from P2
+						# 
+						my ( $x2, $y2, $u2 ) = getu( @bezier_control_points[ 6 .. 9 ], @bezier_control_points[ 4, 5 ] );
+						my @c1 = @bezier_control_points[ 2, 3 ];
+						my @c2 = @bezier_control_points[ 4, 5 ];
+						my @c3 = @bezier_control_points[ 6, 7 ];
+						my $point_string = "%.1f,%.1f " x ( @bezier_points - 1 );
+						$svg = sprintf(
+													 qq{<path d="M %.1f,%.1f L $point_string " style="stroke-opacity: %f; stroke-width: %.1f; stroke: rgb(%d,%d,%d); fill: none" %s />},
+													 ( map { @$_ } @bezier_points[ 0, 1 ] ),
+													 ( map { @$_ } @bezier_points[ 2 .. @bezier_points - 1 ] ),
+													 rgb_color_opacity(seek_parameter("color",@i_param_path_link)),
+													 unit_strip(seek_parameter("thickness", @i_param_path_link),"p"),
+													 rgb_color(seek_parameter("color", @i_param_path_link)),
+													 attr_string($svg_attr),
+													);
+					} elsif ( $num_bezier_control_points == 8 && $SVG_MAKE ) {
+						my $point_string = join( $SPACE, map { sprintf( "%.1f", $_ ) } @bezier_control_points[ 2 .. $num_bezier_control_points - 1 ] );
+						$svg = sprintf(
+													 qq{<path d="M %.1f,%.1f C %s" style="stroke-opacity: %f; stroke-width: %.1f; stroke: rgb(%d,%d,%d); fill: none" %s />},
+													 @bezier_control_points[ 0, 1 ],
+													 $point_string,
+													 rgb_color_opacity(seek_parameter("color",@i_param_path_link)),
+													 unit_strip(seek_parameter("thickness", @i_param_path_link),"p"),
+													 rgb_color(seek_parameter("color", @i_param_path_link)),
+													 attr_string($svg_attr),
+													);
+					} elsif ( $num_bezier_control_points == 6 && $SVG_MAKE ) {
+						$svg = sprintf(
+													 qq{<path d="M %.1f,%.1f Q %.1f,%.1f %.1f,%.1f" style="stroke-opacity: %f; stroke-width: %.1f; stroke: rgb(%d,%d,%d); fill: none" %s />},
+													 @bezier_control_points,
+													 rgb_color_opacity(seek_parameter("color",@i_param_path_link)),
+													 unit_strip(seek_parameter("thickness", @i_param_path_link),"p"),
+													 rgb_color(seek_parameter("color", @i_param_path_link)),
+													 attr_string($svg_attr),
+													);
+					}
+					if ($SVG_MAKE) {
+						printsvg($svg);
+					}
+					if ($PNG_MAKE) {
+						Circos::PNG::draw_bezier(points=>\@bezier_points, 
+																		 thickness=>round(unit_strip(seek_parameter("thickness",@i_param_path_link),"p")), 
+																		 color=>seek_parameter("color",@i_param_path_link ));
+					}
+				} else {
+					#printinfo($radius1,$radius2);
+					my ( $a1, $a2 ) = (getanglepos(get_set_middle($link->{data}[0]{set}),$link->{data}[0]{chr}),
+														 getanglepos(get_set_middle($link->{data}[1]{set}),$link->{data}[1]{chr}));
+					my ( $x1, $y1 ) = getxypos( $a1, $radius1); #linkradius );
+					my ( $x2, $y2 ) = getxypos( $a2, $radius2); #linkradius );
+					my $svg_attr = seek_parameter_glob("^svg.*",qr/^svg/,@i_param_path_link);
+					draw_line( [ $x1, $y1, $x2, $y2 ],
+										 seek_parameter( "thickness", @i_param_path_link ),
+										 seek_parameter( "color",     @i_param_path_link ),
+										 {
+											attr=>$svg_attr },
+									 );
 				}
-		
-				if (debug_or_group("text")) {
-					0&&printdebug_group("text", "label",
-															sprintf( "label %s size %.1f w0 %d h0 %d dima %d dimr %d rp %.1f a %.2f r %d ah %.3f %.3f aseti %.2f %.2f aseto %.2f %.2f",
-																			 @{$data_point}{
-																				 qw(label size w0 h0 dima dimr rpadding angle radius ah_inner ah_outer)
-																			 },
-																			 (
-																				map { $_ / $angular_resolution } (
-																																					$data_point->{aset_inner}->min,
-																																					$data_point->{aset_inner}->max
-																																				 )
-																			 ),
-																			 (
-																				map { $_ / $angular_resolution } (
-																																					$data_point->{aset_outer}->min,
-																																					$data_point->{aset_outer}->max
-																																				 )
-																			 )
-																		 ));
+			}
+			printsvg(qq{</g>}) if $SVG_MAKE;
+    }
+
+    $track_default->{plots} = parse_parameters( fetch_conf("plots"), "plot" );
+
+    #my @plot_tracks = map { parse_parameters($_, "plot", 0) } Circos::Track::make_tracks( fetch_conf("plots","plot"),
+    #$track_default->{plots} );
+
+    my @plot_tracks = map { parse_parameters($_, "plot", 0) } Circos::Track::make_tracks_v2( fetch_conf("plots"),
+																																														 $track_default->{plots} );
+    # keep only those tracks which are shown
+    @plot_tracks    = grep(show($_,$track_default->{plots}), @plot_tracks);
+
+    for my $track ( @plot_tracks ) {
+			
+			my @param_path = ( $track, $track_default->{plots} );
+			my $track_type = seek_parameter( "type", @param_path );
+			if (! track_type_ok($track_type) && !$track->{axes} & !$track->{backgrounds}) {
+				fatal_error("track","bad_type",$track_type,join(",",get_track_types()),Dumper($track));
+			}
+			my $track_id   = $track->{id};
+			
+			my $track_file = seek_parameter("file",@param_path);
+			if (defined $track_file) {
+				$track_file = locate_file( file => $track_file, name=>"$track_type track id $track_id");
+				printdebug_group("summary","processing",$track_id,$track_type,$track_file);
+				my $track_file_param = { record_limit     => seek_parameter( "record_limit", @param_path ),
+																 minsize          => seek_parameter( "minsize", @param_path ),
+																 file_rx          => seek_parameter( "file_rx", @param_path ),
+																 padding          => seek_parameter( "padding", @param_path ),
+																 skip_run         => seek_parameter( "skip_run", @param_path ),
+																 min_value_change => seek_parameter( "min_value_change", @param_path ),
+															 };
+				if ($track_type eq "histogram") {
+					$track_file_param->{param}{fill_color} = seek_parameter( "fill_color", @param_path );
+					$track_file_param->{param}{pattern}    = seek_parameter( "pattern", @param_path );
+					$track_file_param->{param}{thickness}  = seek_parameter( "thickness", @param_path );
+					$track_file_param->{param}{color}      = seek_parameter( "color", @param_path );
+					$track_file_param->{sort_bin_values}   = seek_parameter( "sort_bin_values", @param_path ),
 				}
-				stop_timer("track_text_preprocess");
-	    }													# each label
-	    
-	    my $label_not_placed = 0;
-	    my $label_placed     = 0;
-	    my $all_label_placed = 0;
-	    my %all_label_placed_iters;
-	    
-	    #
-	    # keep track of height values for each angular
-	    # position (sampled at $resolution)
-	    #
+				$track->{__data} = Circos::IO::read_data_file($track_file, $track_type, $track_file_param,$KARYOTYPE);
+			} else {
+				$track->{__data} = undef;
+			}
+			
+			if ( defined seek_parameter("type",@param_path) && 
+					 seek_parameter("type",@param_path) =~ /scatter|text|line|histogram|heatmap/ && 
+					 fetch_conf("calculate_track_statistics")) {
+				Circos::Track::calculate_track_statistics($track);
+			}
 
-	    if (seek_parameter( "snuggle_link_overlap_test|snuggle_refine", @param_path)) {
-				$CONF{text_snuggle_method} = "span";
-	    } elsif (! defined $CONF{text_snuggle_method}) {
-				$CONF{text_snuggle_method} = "array";
-	    }
+			my @rules = Circos::Rule::make_rule_list( $track->{rules}{rule} );
 
-	    my @stackheight  = map { Set::IntSpan->new() } ( 0 .. 2 * $DEGRANGE * $angular_resolution );
-	    my @stackheight2 = map { 0 } ( 0 .. 2 * $DEGRANGE * $angular_resolution );
+			# pick out only those rules that are used
+			@rules = grep( use_set($_,$track->{rules}), @rules );
 
-	    #
-	    # angular coverage of previous labels to avoid placing
-	    # new labels which overlap
-	    #
-	    my $layer = 0;
-	    #
-	    # On the first iteration (seek_min_height=1), this is
-	    # the variable that holds the lowest maxheight found.
-	    # On subsequent iteration, labels that are near this
-	    # height are placed.
-	    #
-	    my $seek_min_height   = 1;
-	    my $global_min_height = 0;
+			if ($track->{__data}) {
+				start_timer("datarules");
+				Circos::Rule::apply_rules_to_track($track,\@rules,\@param_path) if @rules;
+				stop_timer("datarules");
+				$track->{__data} = [ grep( show($_), @{$track->{__data}} ) ];
+				# register this ideogram with the track
+				for my $datum (@{$track->{__data}}) {
+					for my $data_point (@{$datum->{data}}) {
+						my $i = get_ideogram_idx($data_point->{start},$data_point->{chr});
+						$track->{ideogram}{$i}++ if defined $i;
+					}
+				}
+			}
+	
+			$track->{z} = seek_parameter("z",@param_path) || 0;
 
-	    # Sort labels by size then angular position
-	    my @label_data = sort { ($a->{data}[0]{angle}||0) <=> ($b->{data}[0]{angle}||0) } @$track_data;
+			# compute z values for each data point
+			if ($track->{__data}) {
+				for my $datum ( @{$track->{__data}} ) {
+					$datum->{param}{z} = seek_parameter("z",$datum) || 0;
+				}
+			}
+		}
+		
+    my $plotid = 0;
+		
+    for my $track ( sort {$a->{z} <=> $b->{z}} @plot_tracks ) {
+			
+			start_timer("track_preprocess");
+			my @param_path = ( $track, $track_default->{plots} );
+			my $this_track_z = seek_parameter("z",@param_path) || 0;
+			
+			printsvg(qq{<g id="plot$plotid">}) if $SVG_MAKE;
 
-	    #(
-	    #substr( $b->{data}[0]{param}{label_size}, 0, -1 ) <=>
-	    #substr( $a->{data}[0]{param}{label_size}, 0, -1 ) )
-	    #	  || 
+			my $track_data = $track->{__data};
+			my $track_type = seek_parameter( "type", @param_path );
 
-	    my $array_deg_offset = 45; # to avoid mapping deg=0 to start of array and having to look at end of array
+			# global properties of the plot
+			my $orientation           = seek_parameter( "orientation", @param_path );
+			my $orientation_direction = match_string($orientation,"in") ? -1 : 1;
+	
+			my $plot;
+			my $r0 = round(unit_parse( seek_parameter( "r0", @param_path ) ));
+			my $r1 = round(unit_parse( seek_parameter( "r1", @param_path ) ));
 
-	    do {
-				$label_placed = 0;
-			TEXTDATUM:
-				for my $datum (@label_data) {
-					start_timer("track_text_preashift");
-					next if is_hidden($datum, @param_path);
+			printdebug_group("summary",
+											 "drawing",$track->{id},$track_type,
+											 "z",$track->{z},
+											 $track->{file} ? basename($track->{file}) : "no_file",
+											 defined $orientation ? "orient $orientation" : "");
+	
+			my ( @tilelayers, $margin );
+			if ( defined $track_type && $track_type eq "tile" ) {
+				# the margin must be in bases
+				$margin = seek_parameter( "margin", @param_path );
+				unit_validate( $margin, "margin", qw(u b) );
+				$margin    = unit_convert( from => $margin, to => "b" ) ; #, factors => { ub => $CONF{chromosomes_units} } ) ;
+				my $layers = seek_parameter("layers",@param_path);
+				for my $ideogram (@IDEOGRAMS) {
+					my $idx = $ideogram->{idx};
+					$tilelayers[$idx] =	[ map { { set => Set::IntSpan->new(), idx => $_ } } ( 0..$layers-1 ) ];
+				}
+			}
+
+			my $plot_min = seek_parameter( "min", @param_path );
+			my $plot_max = seek_parameter( "max", @param_path );
+
+			if ($track_data && @$track_data > fetch_conf("max_points_per_track")) {
+				fatal_error("track","max_number",int(@$track_data),$track_type,$track->{file},fetch_conf("max_points_per_track"));
+			}
+
+			# get some statistics for certain plot types, so that we
+			# can set default if parameters are not defined
+			if (( defined $track_type && $track_type =~ /scatter|text|tile|line|histogram|heatmap/ ) 
+					&& 
+					( !defined $plot_min || !defined $plot_max || fetch_conf("calculate_track_statistics")) ) {
+				my @values;
+				for my $datum ( @$track_data ) {
+					next unless show($datum);
+					my $value = $datum->{data}[0]{value};
+					if (defined $value && $value =~ /^$RE{num}{real}$/) {
+						$value =~ s/[,_]//g;
+						push @values, $value;
+					}
+				}
+				if (@values) {
+					my $min   = min(@values);
+					my $max   = max(@values);
+					$plot_min = ($min||0) if ! defined $plot_min;
+					$plot_max = ($max||0) if ! defined $plot_max;
+					my $track_stats;
+					$track_stats->{min} = $plot_min;
+					$track_stats->{max} = $plot_max;
+					$track_stats->{average} = average(@values);
+					$track_stats->{avg} = $track_stats->{mean} = $track_stats->{average};
+					$track_stats->{stddev} = stddev(@values);
+					$track_stats->{var} = $track_stats->{stddev}**2;
+					$track_stats->{n} = @values;
+					$track->{__stats} = $track_stats;
+					printdebug_group("layer","track $track_type $track->{id} auto min/max",$plot_min,$plot_max);
+				}
+			}
+
+			if ( defined $plot_max && defined $plot_min && $plot_max < $plot_min ) {
+				fatal_error("track","min_larger_than_max",$plot_min,$plot_max);
+			}
+
+			stop_timer("track_preprocess");
+
+			################################################################
+			# create a color and/or pattern legend for heatmaps
+			my $legend;
+			if ( defined $track_type && $track_type =~ /heatmap|scatter|tile/) {
+				my $color_mapping            = seek_parameter("color_mapping",@param_path) || 0;
+				my $color_mapping_boundaries = seek_parameter("color_mapping_boundaries",@param_path);
+				my @colors                   = color_to_list( seek_parameter("color", @param_path));
+				my $base = seek_parameter( "scale_log_base", @param_path);
+				confess "The scale_log_base parameter [$base] for a heat map cannot be zero or negative. Please change it to a non-zero positive value or remove it." if defined $base && $base <= 0;
+				$legend->{color}  = Circos::Heatmap::encode_mapping($plot_min,$plot_max,\@colors,$color_mapping,$base,$color_mapping_boundaries);
+				if ( my $patterns = seek_parameter("pattern", @param_path)) {
+					my $pattern_mapping = first_defined(seek_parameter("pattern_mapping",@param_path),$color_mapping,0);
+					my @patterns = split(",",$patterns);
+					$legend->{pattern} = Circos::Heatmap::encode_mapping($plot_min,$plot_max,\@patterns,$pattern_mapping,$base);
+				}
+				report_mapping($legend->{color},$track->{id});
+				report_mapping($legend->{pattern},$track->{id});
+			}
+	
+			if ( defined $track_type && $track_type =~ /text/ ) {
+				start_timer("track_text_place");
+				# 
+				# number of discrete steps in a degree
+				#
+				# at r1, number of pixels per degree is
+				# 
+				#   2 * r1 * pi / 360 
+				#
+				# the resolution is given as
+				#
+				#   pixel_sub_sampling * pixels_in_degree
+				# 
+				# subsampling should be at least 2
+				# 
+				my $pixel_sub_sampling = $CONF{text_pixel_subsampling} || 2;
+				my $pixels_in_degree   = $r1 * $TWOPI / 360;
+				my $angular_resolution = seek_parameter( "resolution", @param_path ) || $pixel_sub_sampling * $pixels_in_degree;
+
+				# label link dimensions - key
+				#
+				#      00112223344 (link dims)
+				# LABEL  --\
+				#           \
+				#            \--  LABEL
+				#
+				#
+				# assign immutable label properties
+				# - pixel width, height
+				# - original angular position
+				# - angular width at base
+				#
+				# also tally up the number of labels for an angular bin
+
+				printdebug_group("summary","placing text track",seek_parameter("file",@param_path));
+				printdebug_group("summary","... see progress with -debug_group text");
+				printdebug_group("summary","... see placement summary with -debug_group textplace");
+
+				for my $datum ( @$track_data ) {
+					start_timer("track_text_preprocess");
+					next unless show($datum,@param_path);
 					my $data_point = $datum->{data}[0];
-					#
-					# don't process this point if it has already
-					# been assigned to a layer
-					#
-					next if defined $data_point->{layer};
-					if ( $data_point->{skip} ) {
-						delete $data_point->{skip};
-						next TEXTDATUM;
-					}
+					my $font_role  = "text track";
+					my $font_key   = seek_parameter( "label_font", $datum, @param_path ) || fetch_conf("default_font") || "default";
+					my $font_def   = get_font_def_from_key($font_key,"text track");
+					my $font_file  = get_font_file_from_key($font_key,"text track");
 
-					# text snuggling parameters: maximum snuggle distance and sampling
-					my $sd_max = seek_parameter("max_snuggle_distance", @param_path) || "1r";
-					$sd_max    = unit_convert(from => unit_validate($sd_max,"plots/plot/max_snuggle_distance",qw(n r p)),
-																		to      => "p",
-																		factors => { rp => $data_point->{dima} }
-																	 ) if defined $sd_max;
-					my $ss     = seek_parameter("snuggle_sampling", @param_path) || "1";
-					$ss = unit_convert(from => unit_validate($ss,"plots/plot/snuggle_sampling",qw(n r p)),
-														 to      => "p",
-														 factors => { rp => $data_point->{dima} }
-														) if defined $ss;
-
-					# determine maximum height of labels in this labels' angular span
-					my @range;
-					if ( ! seek_parameter( "label_snuggle", @param_path ) ) {
-						@range = (0);
-					} else {
-						my $range_center = 0; 
-						@range = sort { abs( $a - $range_center ) <=>  abs( $b - $range_center ) }
-							map { round( $range_center - $_ * $ss, $range_center + $_ * $ss )} ( 0 .. $sd_max / $ss );
-						@range = (0) if !@range;
+					$data_point->{size} = unit_strip( unit_validate( seek_parameter( "label_size", $datum, @param_path ),
+																													 "plots/plot/label_size",
+																													 qw(p n)
+																												 ));
+		
+					my ( $label_width, $label_height ) = get_label_size( font_file => $font_file,
+																															 size      => $data_point->{size},
+																															 text      => $data_point->{value} );
+		
+					# w0 h0 - width and height of label (irrespective of rotation)
+					# w  h  - width at base (parallel to circle) of label and height (radial)
+					# dimr  - size along radial direction (perpendicular to ideogram)
+					# dima  - size along angular direction (parallel to ideogram)
+					@{$data_point}{qw(w0 h0)}     = ( $label_width, $label_height );
+					@{$data_point}{qw(w h)}       = ( $label_width, $label_height );
+					@{$data_point}{qw(dimr dima)} = ( $label_width, $label_height );
+					if (0 && defined_and_zero( seek_parameter( "label_rotate", $datum, @param_path ) )
+							||
+							seek_parameter("label_tangential", $datum, @param_path)) {
+						# label is parallel to ideogram
+						@{$data_point}{qw(w h)}       = @{$data_point}{qw(h0 w0)};
+						@{$data_point}{qw(dimr dima)} = @{$data_point}{qw(h0 w0)};
+						$data_point->{tangential}     = 1;
+						$data_point->{parallel}       = 1;
+						$data_point->{radial}         = 0;
+						$data_point->{rotated}        = 0;
+						#($label_width,$label_height) = ($label_height,$label_width);
+					} elsif (0) { 
+						# label is radial
+						@{$data_point}{qw(w h)}       = @{$data_point}{qw(w0 h0)};
+						@{$data_point}{qw(dimr dima)} = @{$data_point}{qw(w0 h0)};
+						$data_point->{tangential}     = 0;
+						$data_point->{parallel}       = 0;
+						$data_point->{radial}         = 1;
+						$data_point->{rotated}        = 1;
 					}
-					my ( $aset_inner_best, $label_min_height, $angle_new, $pix_shift_best );
-					stop_timer("track_text_preashift");
-					my $shift_iterations = 1;
-					start_timer("track_text_ashift");
-					my $angle_new_mult = $RAD2DEG / $data_point->{radius};
-				ASHIFT:
-					for my $pix_shift (@range) {
-						start_timer("track_text_ashiftiter");
-						my $angle_new = $data_point->{angle} + $angle_new_mult * $pix_shift; #$RAD2DEG*$pix_shift / $data_point->{radius};
-						my ($label_curr_height,$ah_inner);
-						for my $iter ( 1 .. $shift_iterations ) {
-							my $a  = $angle_new + $array_deg_offset - $CONF{image}{angle_offset};
-							my $ar = int( $a * $angular_resolution);
-							my $h;
-							if (defined $label_curr_height) {
-								$h = $label_curr_height;
-							} elsif ( $CONF{text_snuggle_method} eq "array" && defined $stackheight2[ $ar ]) {
-								$h = $stackheight2[ $ar ];
-							} elsif ( $CONF{text_snuggle_method} eq "span" && $stackheight[ $ar ]->cardinality ) {
-								$h = $stackheight[ $ar  ]->max;
-							} else {
-								$h = 0;
-							}
-							$ah_inner  = $RAD2DEG * $data_point->{dima} / ( $data_point->{radius} + $h );
-							my $ashift = $ah_inner/2;
-							my $a1 = $a - $ashift; 
-							my $a2 = $a + $ashift; 
-							#my @elems = ( round_custom($a1*$angular_resolution,"round")..round_custom($a2*$angular_resolution,"round") );
-							# int is faster than round
-							# use round_custom from Utils.pm to provide different rounding options (int,round,floor,ceil)
-							my @elems = ( int($a1*$angular_resolution) .. int($a2*$angular_resolution) );
-							if ($CONF{text_snuggle_method} eq "array") {
-								$label_curr_height = max( @stackheight2[@elems] );
-							} else {
-								$label_curr_height = max( map { $_ ? $_->max : 0 } @stackheight[@elems] ) || 0;
-							}
-							$ah_inner = $RAD2DEG * $data_point->{dima} / ( $data_point->{radius} + $label_curr_height );	
+		
+					# radial padding is along radial direction - can
+					# be absolute (p) or relative (r, to label width)
+					#
+					# computing padding here because it depends on the
+					# label size
+					$data_point->{rpadding} = unit_convert(
+																								 from    => unit_validate( seek_parameter( "rpadding", $datum, @param_path ), "plots/plot/rpadding", qw(r p) ),
+																								 to      => "p",
+																								 factors => { rp => $data_point->{dimr} }
+																								);
+
+					if ( seek_parameter( "show_links", @param_path ) ) {
+						my @link_dims = split( /[, ]+/, seek_parameter( "link_dims", @param_path ) );
+						@link_dims = map { unit_convert(
+																						from    => unit_validate( $_, "plots/plot/link_dims", qw(r p) ),
+																						to      => "p",
+																						factors => { rp => $data_point->{dimr} }
+																					 ) } @link_dims;
+						my $link_orientation = seek_parameter( "link_orientation", @param_path ) || "in";
+						if ($link_orientation eq "out") {
+							$data_point->{rpadding} -= sum(@link_dims);
+						} else {
+							$data_point->{rpadding} += sum(@link_dims);
+							#printinfo(sum(@link_dims));
 						}
-						stop_timer("track_text_ashiftiter");
-						# label would stick past r1 - try next pixel shift
-						if ( $data_point->{radius} + $label_curr_height + $data_point->{dimr} > $r1 ) {
-							next ASHIFT;
+					}
+		
+					# original angular position, radius
+					# - inner layer radius includes padding for link lines
+					my $angle  = getanglepos( ( $data_point->{start} + $data_point->{end} ) / 2, $data_point->{chr} );
+		
+					# radius, uncorrected for ideogram radial position
+					my $radius = $r0;
+
+					# correct radius to ideogram radial position 0.63-2
+					my $ideogram_idx = get_ideogram_idx( $data_point->{start}, $data_point->{chr} );
+					my $ideogram     = get_ideogram_by_idx($ideogram_idx);
+
+					$radius    = 	unit_parse( seek_parameter( "r0", @param_path ), $ideogram );
+					#$r0 = unit_parse( seek_parameter( "r0", @param_path ), $ideogram );
+					#$r1 = unit_parse( seek_parameter( "r1", @param_path ), $ideogram );
+
+					@{$data_point}{qw(angle radius)} = ( $angle, $radius );
+		
+					# angular height, compensated for height
+					# reduction, at the start (inner) and end (outer)
+					# of the label; ah_outer < ah_inner because radius
+					# of the former is larger
+
+					$data_point->{ah_inner} = $RAD2DEG * $data_point->{dima} / $data_point->{radius};
+					$data_point->{ah_outer} = $RAD2DEG * $data_point->{dima} / ( $data_point->{radius} + $data_point->{dimr} );
+		
+					# angular height set, in units of 1/angular_resolution, at the foot (inner) and
+					# top (outer) of the label
+		
+					for my $x (qw(inner outer)) {
+						$data_point->{"aset_$x"} = span_from_pair(
+																											map { angle_to_span( $_, $angular_resolution ) } (
+																																																				$data_point->{angle} - $data_point->{"ah_$x"} / 2,
+																																																				$data_point->{angle} + $data_point->{"ah_$x"} / 2
+																																																			 ));
+					}
+		
+					if (debug_or_group("text")) {
+						0&&printdebug_group("text", "label",
+																sprintf( "label %s size %.1f w0 %d h0 %d dima %d dimr %d rp %.1f a %.2f r %d ah %.3f %.3f aseti %.2f %.2f aseto %.2f %.2f",
+																				 @{$data_point}{
+																					 qw(label size w0 h0 dima dimr rpadding angle radius ah_inner ah_outer)
+																				 },
+																				 (
+																					map { $_ / $angular_resolution } (
+																																						$data_point->{aset_inner}->min,
+																																						$data_point->{aset_inner}->max
+																																					 )
+																				 ),
+																				 (
+																					map { $_ / $angular_resolution } (
+																																						$data_point->{aset_outer}->min,
+																																						$data_point->{aset_outer}->max
+																																					 )
+																				 )
+																			 ));
+					}
+					stop_timer("track_text_preprocess");
+				}												# each label
+	    
+				my $label_not_placed = 0;
+				my $label_placed     = 0;
+				my $all_label_placed = 0;
+				my %all_label_placed_iters;
+	    
+				#
+				# keep track of height values for each angular
+				# position (sampled at $resolution)
+				#
+
+				if (seek_parameter( "snuggle_link_overlap_test|snuggle_refine", @param_path)) {
+					$CONF{text_snuggle_method} = "span";
+				} elsif (! defined $CONF{text_snuggle_method}) {
+					$CONF{text_snuggle_method} = "array";
+				}
+
+				my @stackheight  = map { Set::IntSpan->new() } ( 0 .. 2 * $DEGRANGE * $angular_resolution );
+				my @stackheight2 = map { 0 } ( 0 .. 2 * $DEGRANGE * $angular_resolution );
+
+				#
+				# angular coverage of previous labels to avoid placing
+				# new labels which overlap
+				#
+				my $layer = 0;
+				#
+				# On the first iteration (seek_min_height=1), this is
+				# the variable that holds the lowest maxheight found.
+				# On subsequent iteration, labels that are near this
+				# height are placed.
+				#
+				my $seek_min_height   = 1;
+				my $global_min_height = 0;
+
+				# Sort labels by size then angular position
+				my @label_data = sort { ($a->{data}[0]{angle}||0) <=> ($b->{data}[0]{angle}||0) } @$track_data;
+
+				#(
+				#substr( $b->{data}[0]{param}{label_size}, 0, -1 ) <=>
+				#substr( $a->{data}[0]{param}{label_size}, 0, -1 ) )
+				#	  || 
+
+				my $array_deg_offset = 45; # to avoid mapping deg=0 to start of array and having to look at end of array
+
+				do {
+					$label_placed = 0;
+	      TEXTDATUM:
+					for my $datum (@label_data) {
+						start_timer("track_text_preashift");
+						next if is_hidden($datum, @param_path);
+						my $data_point = $datum->{data}[0];
+						#
+						# don't process this point if it has already
+						# been assigned to a layer
+						#
+						next if defined $data_point->{layer};
+						if ( $data_point->{skip} ) {
+							delete $data_point->{skip};
+							next TEXTDATUM;
 						}
+
+						# text snuggling parameters: maximum snuggle distance and sampling
+						my $sd_max = seek_parameter("max_snuggle_distance", @param_path) || "1r";
+						$sd_max    = unit_convert(from => unit_validate($sd_max,"plots/plot/max_snuggle_distance",qw(n r p)),
+																			to      => "p",
+																			factors => { rp => $data_point->{dima} }
+																		 ) if defined $sd_max;
+						my $ss     = seek_parameter("snuggle_sampling", @param_path) || "1";
+						$ss = unit_convert(from => unit_validate($ss,"plots/plot/snuggle_sampling",qw(n r p)),
+															 to      => "p",
+															 factors => { rp => $data_point->{dima} }
+															) if defined $ss;
+
+						# determine maximum height of labels in this labels' angular span
+						my @range;
+						if ( ! seek_parameter( "label_snuggle", @param_path ) ) {
+							@range = (0);
+						} else {
+							my $range_center = 0; 
+							@range = sort { abs( $a - $range_center ) <=>  abs( $b - $range_center ) }
+								map { round( $range_center - $_ * $ss, $range_center + $_ * $ss )} ( 0 .. $sd_max / $ss );
+							@range = (0) if !@range;
+						}
+						my ( $aset_inner_best, $label_min_height, $angle_new, $pix_shift_best );
+						stop_timer("track_text_preashift");
+						my $shift_iterations = 1;
+						start_timer("track_text_ashift");
+						my $angle_new_mult = $RAD2DEG / $data_point->{radius};
+					ASHIFT:
+						for my $pix_shift (@range) {
+							start_timer("track_text_ashiftiter");
+							my $angle_new = $data_point->{angle} + $angle_new_mult * $pix_shift; #$RAD2DEG*$pix_shift / $data_point->{radius};
+							my ($label_curr_height,$ah_inner);
+							for my $iter ( 1 .. $shift_iterations ) {
+								my $a  = $angle_new + $array_deg_offset - $CONF{image}{angle_offset};
+								my $ar = int( $a * $angular_resolution);
+								my $h;
+								if (defined $label_curr_height) {
+									$h = $label_curr_height;
+								} elsif ( $CONF{text_snuggle_method} eq "array" && defined $stackheight2[ $ar ]) {
+									$h = $stackheight2[ $ar ];
+								} elsif ( $CONF{text_snuggle_method} eq "span" && $stackheight[ $ar ]->cardinality ) {
+									$h = $stackheight[ $ar  ]->max;
+								} else {
+									$h = 0;
+								}
+								$ah_inner  = $RAD2DEG * $data_point->{dima} / ( $data_point->{radius} + $h );
+								my $ashift = $ah_inner/2;
+								my $a1 = $a - $ashift; 
+								my $a2 = $a + $ashift; 
+								#my @elems = ( round_custom($a1*$angular_resolution,"round")..round_custom($a2*$angular_resolution,"round") );
+								# int is faster than round
+								# use round_custom from Utils.pm to provide different rounding options (int,round,floor,ceil)
+								my @elems = ( int($a1*$angular_resolution) .. int($a2*$angular_resolution) );
+								if ($CONF{text_snuggle_method} eq "array") {
+									$label_curr_height = max( @stackheight2[@elems] );
+								} else {
+									$label_curr_height = max( map { $_ ? $_->max : 0 } @stackheight[@elems] ) || 0;
+								}
+								$ah_inner = $RAD2DEG * $data_point->{dima} / ( $data_point->{radius} + $label_curr_height );	
+							}
+							stop_timer("track_text_ashiftiter");
+							# label would stick past r1 - try next pixel shift
+							if ( $data_point->{radius} + $label_curr_height + $data_point->{dimr} > $r1 ) {
+								next ASHIFT;
+							}
 			
-						my $d    = ($label_curr_height||0) - ($global_min_height||0);
-						my $flag = $DASH;
-						my $pass = 0;
+							my $d    = ($label_curr_height||0) - ($global_min_height||0);
+							my $flag = $DASH;
+							my $pass = 0;
 			
-						if ( !$seek_min_height ) {
+							if ( !$seek_min_height ) {
+								my $tol = 0;
+								if ( seek_parameter( "snuggle_tolerance", @param_path )) {
+									$tol = unit_convert(
+																			from => unit_validate(seek_parameter("snuggle_tolerance", @param_path),
+																														"plots/plot/snuggle_tolerance",
+																														qw(n r p)
+																													 ),
+																			to      => "p",
+																			factors => { rp => $data_point->{dimr} }
+																		 );
+								}
+								if ( !defined $label_min_height ) {
+									$pass = 1 if $d <= $tol;
+								} else {
+									if ( $d < 0 ) {
+										#$pass = 1;
+										;						# change condition here? - ky
+									} elsif ( $d <= $tol ) {
+										$pass = 1
+											if abs($pix_shift) <
+												abs($pix_shift_best);
+									}
+								}
+							} else {
+								# we're looking for the min height for this label
+								if ( ! defined $label_min_height || $label_curr_height < $label_min_height) {
+									$pass = 1;
+								}
+							}
+			
+							if ($pass) {
+								$label_min_height = $label_curr_height;
+								$data_point->{label_min_height} = $label_min_height;
+			    
+								$flag = $PLUS_SIGN;
+			    
+								if ( !$seek_min_height ) {
+									$data_point->{angle_new} = $angle_new;
+									$aset_inner_best = span_from_pair(
+																										map { angle_to_span( $_,$angular_resolution ) } (
+																																																		 $angle_new - $ah_inner / 2,
+																																																		 $angle_new + $ah_inner / 2
+																																																		));
+									$pix_shift_best = $pix_shift;
+									$flag           = "*";
+								}
+							}
+			
+							if (debug_or_group("text")) {
+								printdebug_group("text",
+																 "label",
+																 "layer",
+																 $layer,
+																 "snuggle",
+																 $seek_min_height ? "seek" : "mtch",
+																 $flag,
+																 $data_point->{value},
+																 sprintf( "%.1f", $pix_shift ),
+																 "d",
+																 $d,
+																 "label_min_height",
+																 $label_min_height,
+																 "global_min_height",
+																 $global_min_height
+																);
+							}
+						}										# ASHIFT
+						stop_timer("track_text_ashift");
+						stop_timer("track_text_preashift");
+		    
+						# store the lowest maxheight seen
+						if ($seek_min_height) {
+							my $d = ($label_min_height||0) - ($global_min_height||0);
+							if ( ! defined $global_min_height || $d < 0 ) {
+								$global_min_height = $label_min_height;
+							} elsif ( $d > 0 ) {
+								$data_point->{skip} = 1;
+							}
+							next TEXTDATUM;
+						} else {
+							# this label was not placed on this iteration - go to next label
+							next TEXTDATUM if ! defined $data_point->{angle_new};
+						}
+
+						# if we got this far, at least one label was placed,
+						# therefore reset the unplaced counter
+						$label_not_placed = 0;
+						# make sure that the label's link does not
+						# interfere with previously placed labels
+						if (! $seek_min_height 
+								&& 
+								seek_parameter("show_links",@param_path)
+								&& 
+								seek_parameter( "snuggle_link_overlap_test", @param_path ) ) {
+							start_timer("track_text_snuggle_overlap");
+							my ( $angle_from, $angle_to ) = sort { $a <=> $b } @{$data_point}{qw(angle angle_new)};
+							my $r = $data_point->{radius} + $label_min_height;
+							my $linkset = Set::IntSpan->new(sprintf( "%d-%d",$label_min_height,
+																											 $label_min_height + $data_point->{rpadding} ));
 							my $tol = 0;
-							if ( seek_parameter( "snuggle_tolerance", @param_path )) {
-								$tol = unit_convert(
-																		from => unit_validate(seek_parameter("snuggle_tolerance", @param_path),
-																													"plots/plot/snuggle_tolerance",
-																													qw(n r p)
-																												 ),
+							if (seek_parameter("snuggle_link_overlap_tolerance",@param_path)) {
+								$tol = unit_convert(from => unit_validate(seek_parameter("snuggle_link_overlap_tolerance",@param_path),
+																													"plots/plot/snuggle_link_overlap_tolerance",
+																													qw(r p n)),
 																		to      => "p",
 																		factors => { rp => $data_point->{dimr} }
 																	 );
 							}
-							if ( !defined $label_min_height ) {
-								$pass = 1 if $d <= $tol;
-							} else {
-								if ( $d < 0 ) {
-									#$pass = 1;
-									;							# change condition here? - ky
-								} elsif ( $d <= $tol ) {
-									$pass = 1
-										if abs($pix_shift) <
-											abs($pix_shift_best);
+							my $j = 0;
+							for my $i (int( ( $angle_from + $array_deg_offset - $CONF{image}{angle_offset} ) * $angular_resolution )
+												 ...
+												 int( ( $angle_to   + $array_deg_offset -	$CONF{image}{angle_offset} ) * $angular_resolution )
+												) {
+								# $ss - snuggle_sampling converted to absolute units
+								next if seek_parameter( "snuggle_sampling", @param_path )	and	$j++ % round($ss);
+								my $collision = $stackheight[$i]->intersect($linkset)->cardinality - 1;
+								if ( $collision > $tol ) {
+									delete $data_point->{angle_new};
+									$data_point->{skip} = 1;
+									next TEXTDATUM;
 								}
 							}
-						} else {
-							# we're looking for the min height for this label
-							if ( ! defined $label_min_height || $label_curr_height < $label_min_height) {
-								$pass = 1;
-							}
-						}
-			
-						if ($pass) {
-							$label_min_height = $label_curr_height;
-							$data_point->{label_min_height} = $label_min_height;
-			    
-							$flag = $PLUS_SIGN;
-			    
-							if ( !$seek_min_height ) {
-								$data_point->{angle_new} = $angle_new;
-								$aset_inner_best = span_from_pair(
-																									map { angle_to_span( $_,$angular_resolution ) } (
-																																																	 $angle_new - $ah_inner / 2,
-																																																	 $angle_new + $ah_inner / 2
-																																																	));
-								$pix_shift_best = $pix_shift;
-								$flag           = "*";
-							}
-						}
-			
-						if (debug_or_group("text")) {
-							printdebug_group("text",
-															 "label",
-															 "layer",
-															 $layer,
-															 "snuggle",
-															 $seek_min_height ? "seek" : "mtch",
-															 $flag,
-															 $data_point->{value},
-															 sprintf( "%.1f", $pix_shift ),
-															 "d",
-															 $d,
-															 "label_min_height",
-															 $label_min_height,
-															 "global_min_height",
-															 $global_min_height
-															);
-						}
-					}	# ASHIFT
-					stop_timer("track_text_ashift");
-					stop_timer("track_text_preashift");
- 
-					# store the lowest maxheight seen
-					if ($seek_min_height) {
-						my $d = ($label_min_height||0) - ($global_min_height||0);
-						if ( ! defined $global_min_height || $d < 0 ) {
-							$global_min_height = $label_min_height;
-						} elsif ( $d > 0 ) {
-							$data_point->{skip} = 1;
-						}
-						next TEXTDATUM;
-					} else {
-						# this label was not placed on this iteration - go to next label
-						next TEXTDATUM if ! defined $data_point->{angle_new};
-					}
+							stop_timer("track_text_snuggle_overlap");
+						}										# snuggle overlap test
 
- 					# if we got this far, at least one label was placed,
-					# therefore reset the unplaced counter
-					$label_not_placed = 0;
-					# make sure that the label's link does not
-					# interfere with previously placed labels
-					if (! $seek_min_height 
-							&& 
-							seek_parameter("show_links",@param_path)
-							&& 
-							seek_parameter( "snuggle_link_overlap_test", @param_path ) ) {
-						start_timer("track_text_snuggle_overlap");
-						my ( $angle_from, $angle_to ) = sort { $a <=> $b } @{$data_point}{qw(angle angle_new)};
-						my $r = $data_point->{radius} + $label_min_height;
-						my $linkset = Set::IntSpan->new(sprintf( "%d-%d",$label_min_height,
-																										 $label_min_height + $data_point->{rpadding} ));
-						my $tol = 0;
-						if (seek_parameter("snuggle_link_overlap_tolerance",@param_path)) {
-							$tol = unit_convert(from => unit_validate(seek_parameter("snuggle_link_overlap_tolerance",@param_path),
-																												"plots/plot/snuggle_link_overlap_tolerance",
-																												qw(r p n)),
-																	to      => "p",
-																	factors => { rp => $data_point->{dimr} }
-																 );
-						}
-						my $j = 0;
-						for my $i (int( ( $angle_from + $array_deg_offset - $CONF{image}{angle_offset} ) * $angular_resolution )
-											 ...
-											 int( ( $angle_to   + $array_deg_offset -	$CONF{image}{angle_offset} ) * $angular_resolution )
-											) {
-							# $ss - snuggle_sampling converted to absolute units
-							next if seek_parameter( "snuggle_sampling", @param_path )	and	$j++ % round($ss);
-							my $collision = $stackheight[$i]->intersect($linkset)->cardinality - 1;
-							if ( $collision > $tol ) {
-								delete $data_point->{angle_new};
-								$data_point->{skip} = 1;
-								next TEXTDATUM;
-							}
-						}
-						stop_timer("track_text_snuggle_overlap");
-					}	# snuggle overlap test
+						my $a_padding = unit_convert(from    => unit_validate( seek_parameter( "padding", $datum, @param_path ),
+																																	 "plots/plot/padding",
+																																	 qw(r p) ),
+																				 to      => "p",
+																				 factors => { rp => $data_point->{dima} }
+																				);
+						my $padding = $angular_resolution * $RAD2DEG * $a_padding / ( $label_min_height + $data_point->{radius} );
+						my $aset_padded = $aset_inner_best->trim( -$padding );
+						$data_point->{radius_shift} = $label_min_height;
+						printdebug_group("test",
+														 "label",
+														 "layer", $layer, $PLUS_SIGN,
+														 $data_point->{value},
+														 "mh",
+														 $label_min_height,
+														 "a",
+														 sprintf( "%.3f", $data_point->{angle} ),
+														 "an",
+														 sprintf( "%.3f", $data_point->{angle_new} ),
+														 "as",
+														 sprintf( "%.3f",
+																			$data_point->{angle_new} -
+																			$data_point->{angle} ),
+														 "rs",
+														 $data_point->{radius_shift}
+														);
 
-					my $a_padding = unit_convert(from    => unit_validate( seek_parameter( "padding", $datum, @param_path ),
-																																 "plots/plot/padding",
-																																 qw(r p) ),
-																			 to      => "p",
-																			 factors => { rp => $data_point->{dima} }
-																			);
-					my $padding = $angular_resolution * $RAD2DEG * $a_padding / ( $label_min_height + $data_point->{radius} );
-					my $aset_padded = $aset_inner_best->trim( -$padding );
-					$data_point->{radius_shift} = $label_min_height;
-					printdebug_group("test",
-													 "label",
-													 "layer", $layer, $PLUS_SIGN,
-													 $data_point->{value},
-													 "mh",
-													 $label_min_height,
-													 "a",
-													 sprintf( "%.3f", $data_point->{angle} ),
-													 "an",
-													 sprintf( "%.3f", $data_point->{angle_new} ),
-													 "as",
-													 sprintf( "%.3f",
-																		$data_point->{angle_new} -
-																		$data_point->{angle} ),
-													 "rs",
-													 $data_point->{radius_shift}
-													);
+						$data_point->{layer} = $layer;
+						$label_placed++;
+						$all_label_placed++;
 
-					$data_point->{layer} = $layer;
-					$label_placed++;
-					$all_label_placed++;
+						my $ah_outer =
+							$RAD2DEG * $data_point->{dima} /
+								( $data_point->{radius} +
+									$data_point->{radius_shift} +
+									$data_point->{dimr} );
 
-					my $ah_outer =
-						$RAD2DEG * $data_point->{dima} /
-							( $data_point->{radius} +
+						my $ah_set_outer = span_from_pair(
+																							map { angle_to_span( $_, $angular_resolution ) } (
+																																																$data_point->{angle_new} - $ah_outer / 2,
+																																																$data_point->{angle_new} + $ah_outer / 2
+																																															 )
+																						 );
+
+						$ah_set_outer = $ah_set_outer->trim( -$padding );
+
+						printdebug_group("text",
+														 "label",
+														 "positioned",
+														 $data_point->{value},
+														 $data_point->{radius} + $data_point->{radius_shift},
+														 $data_point->{radius} + $data_point->{radius_shift} + $data_point->{dimr} + $data_point->{rpadding}
+														);
+
+						for my $a ( $ah_set_outer->elements ) {
+							my $height =
 								$data_point->{radius_shift} +
-								$data_point->{dimr} );
+									$data_point->{dimr} +
+										$data_point->{rpadding};
 
-					my $ah_set_outer = span_from_pair(
-																						map { angle_to_span( $_, $angular_resolution ) } (
-																																															$data_point->{angle_new} - $ah_outer / 2,
-																																															$data_point->{angle_new} + $ah_outer / 2
-																																														 )
-																					 );
+							my $i = $a + $array_deg_offset * $angular_resolution;
 
-					$ah_set_outer = $ah_set_outer->trim( -$padding );
+							my $stack_low  = $data_point->{radius_shift} + $data_point->{rpadding};
+							my $stack_high = $data_point->{radius_shift} + $data_point->{rpadding} + $data_point->{dimr};		      
+							if ($CONF{text_snuggle_method} eq "array") {
+								$stackheight2[$i] = scalar max($stackheight2[$i],$stack_low,$stack_high);
+							} else {
+								$stackheight[$i]->U( Set::IntSpan->new( sprintf( "%d-%d", $stack_low,$stack_high)));
+							}
+						}
+					}											# TEXTDATUM
+
+					stop_timer("track_text_preashift");
 
 					printdebug_group("text",
-													 "label",
-													 "positioned",
-													 $data_point->{value},
-													 $data_point->{radius} + $data_point->{radius_shift},
-													 $data_point->{radius} + $data_point->{radius_shift} + $data_point->{dimr} + $data_point->{rpadding}
+													 "label",   "iterationsummary", 
+													 "seekmin", $seek_min_height,   
+													 "global_min_height", $global_min_height, 
+													 "positioned",  $label_placed,      
+													 "all",     $all_label_placed
 													);
 
-					for my $a ( $ah_set_outer->elements ) {
-						my $height =
-							$data_point->{radius_shift} +
-								$data_point->{dimr} +
-									$data_point->{rpadding};
+					# refine angular position within this layer for adjacent labels
+					start_timer("track_text_refine");
+	      REFINE:
+					my $data_point_prev;
+					my $refined = 0;
+					for my $datum (@label_data) {
+						last unless seek_parameter( "snuggle_refine", @param_path );
+						next if is_hidden($datum, @param_path );
+						my $data_point = $datum->{data}[0];
+						next unless defined $data_point->{layer} && $data_point->{layer} == $layer;
+						if ($data_point_prev) {
+							if ($data_point->{angle_new} < $data_point_prev->{angle_new}
+									&& 
+									abs($data_point->{radius_shift} - $data_point_prev->{radius_shift}) < 15
+								 ) {
+								$refined = 1;
+								($data_point->{angle_new},$data_point_prev->{angle_new}) = ($data_point_prev->{angle_new},$data_point->{angle_new});
+								printdebug_group("text",
+																 "label",
+																 "refined",
+																 $data_point->{value},
+																 $data_point->{angle_new},
+																 $data_point_prev->{value},
+																 $data_point_prev->{angle_new}
+																);
+			    
+								for my $dp ( $data_point, $data_point_prev ) {
+									my $ah_outer     = $RAD2DEG *	$dp->{dima} / ( $dp->{radius} +	$dp->{radius_shift} +	$data_point->{dimr} );
+									my $ah_set_outer = span_from_pair( map {	angle_to_span( $_, $angular_resolution ) } 
+																										 ($dp->{angle_new} - $ah_outer / 2,
+																											$dp->{angle_new} + $ah_outer / 2)
+																									 );
+									my $a_padding = unit_convert( from => unit_validate( seek_parameter( "padding", $datum, @param_path ),
+																																			 "plots/plot/padding",
+																																			 qw(r p)),
+																								to      => "p",
+																								factors => { rp => $dp->{dima} }
+																							);
+									my $padding   = $angular_resolution *	$RAD2DEG * $a_padding /	( $dp->{radius} +	$dp->{radius_shift} );
+									$ah_set_outer = $ah_set_outer->trim( -$padding );
+									for my $a ( $ah_set_outer->elements ) {
+										my $height = $dp->{radius_shift} + $dp->{dimr} + $dp->{rpadding};
+										my $i = $a + $array_deg_offset * $angular_resolution;
+										$stackheight[$i]->U(Set::IntSpan->new(sprintf( "%d-%d",
+																																	 $dp->{radius_shift} + $dp->{rpadding},
+																																	 $dp->{radius_shift} + $dp->{dimr} + $dp->{rpadding} )
+																												 ));
+									}
+								}
+								last;
+							}
+						}
+						$data_point_prev = $data_point;
+					}
+					# keep refining this layer, until no refinements are left to make
+					goto REFINE if $refined;
+					stop_timer("track_text_refine");
 
-						my $i = $a + $array_deg_offset * $angular_resolution;
-
-						my $stack_low  = $data_point->{radius_shift} + $data_point->{rpadding};
-						my $stack_high = $data_point->{radius_shift} + $data_point->{rpadding} + $data_point->{dimr};		      
-						if ($CONF{text_snuggle_method} eq "array") {
-							$stackheight2[$i] = scalar max($stackheight2[$i],$stack_low,$stack_high);
+					if ($seek_min_height) {
+						$seek_min_height = 0;
+						printdebug_group("text", "label", "toggle seek_min_height", $seek_min_height,0 );
+					} else {
+						$seek_min_height = 1;
+						if ( !$label_placed ) {
+							printdebug_group("text", "label", "toggle seek_min_height", $seek_min_height,1 );
+							$label_not_placed++;
+							$layer++;
+							$global_min_height = undef;
 						} else {
-							$stackheight[$i]->U( Set::IntSpan->new( sprintf( "%d-%d", $stack_low,$stack_high)));
+							printdebug_group("text", "label", "toggle seek_min_height", $seek_min_height,2 );
+							$label_not_placed = 0;
+						}
+						if ( seek_parameter( "layers", @param_path )
+								 && $layer >=
+								 seek_parameter( "layers", @param_path ) ) {
+							printdebug_group("text", "label", "toggle seek_min_height", $seek_min_height,3 );
+							$label_placed     = 0;
+							$label_not_placed = 2;
+						}
+		    
+						if ( $all_label_placed_iters{$all_label_placed}++ > 20 ) {
+							printdebug_group("text", "label", "toggle seek_min_height", $seek_min_height,4 );
+							$label_placed     = 0;
+							$label_not_placed = 2;
 						}
 					}
-				}												# TEXTDATUM
+					printdebug_group("text",
+													 "label",  
+													 "loopsummary",      
+													 "seekmin",              $seek_min_height,   
+													 "global_min_height",    $global_min_height, 
+													 "label_positioned",     $label_placed,      
+													 "label_not_positioned", $label_not_placed,  
+													 "all",                  $all_label_placed );
+				} while ( $label_placed || $label_not_placed < 2 ); # TEXT LOOP
+				stop_timer("track_text_place");
+			}
 
-				stop_timer("track_text_preashift");
+			# last point plotted, by chr
+			my $prevpoint;
 
-				printdebug_group("text",
-												 "label",   "iterationsummary", 
-												 "seekmin", $seek_min_height,   
-												 "global_min_height", $global_min_height, 
-												 "positioned",  $label_placed,      
-												 "all",     $all_label_placed
-												);
+			printsvg(qq{<g id="plot$plotid-axis">}) if $SVG_MAKE;
 
-				# refine angular position within this layer for adjacent labels
-				start_timer("track_text_refine");
-			REFINE:
-				my $data_point_prev;
-				my $refined = 0;
-				for my $datum (@label_data) {
-					last unless seek_parameter( "snuggle_refine", @param_path );
-					next if is_hidden($datum, @param_path );
-					my $data_point = $datum->{data}[0];
-					next unless defined $data_point->{layer} && $data_point->{layer} == $layer;
-					if ($data_point_prev) {
-						if ($data_point->{angle_new} < $data_point_prev->{angle_new}
-								&& 
-								abs($data_point->{radius_shift} - $data_point_prev->{radius_shift}) < 15
-							 ) {
-							$refined = 1;
-							($data_point->{angle_new},$data_point_prev->{angle_new}) = ($data_point_prev->{angle_new},$data_point->{angle_new});
-							printdebug_group("text",
-															 "label",
-															 "refined",
-															 $data_point->{value},
-															 $data_point->{angle_new},
-															 $data_point_prev->{value},
-															 $data_point_prev->{angle_new}
-															);
-							
-							for my $dp ( $data_point, $data_point_prev ) {
-								my $ah_outer     = $RAD2DEG *	$dp->{dima} / ( $dp->{radius} +	$dp->{radius_shift} +	$data_point->{dimr} );
-								my $ah_set_outer = span_from_pair( map {	angle_to_span( $_, $angular_resolution ) } 
-																									 ($dp->{angle_new} - $ah_outer / 2,
-																										$dp->{angle_new} + $ah_outer / 2)
-																								 );
-								my $a_padding = unit_convert( from => unit_validate( seek_parameter( "padding", $datum, @param_path ),
-																																		 "plots/plot/padding",
-																																		 qw(r p)),
-																							to      => "p",
-																							factors => { rp => $dp->{dima} }
-																						);
-								my $padding   = $angular_resolution *	$RAD2DEG * $a_padding /	( $dp->{radius} +	$dp->{radius_shift} );
-								$ah_set_outer = $ah_set_outer->trim( -$padding );
-								for my $a ( $ah_set_outer->elements ) {
-									my $height = $dp->{radius_shift} + $dp->{dimr} + $dp->{rpadding};
-									my $i = $a + $array_deg_offset * $angular_resolution;
-									$stackheight[$i]->U(Set::IntSpan->new(sprintf( "%d-%d",
-																																 $dp->{radius_shift} + $dp->{rpadding},
-																																 $dp->{radius_shift} + $dp->{dimr} + $dp->{rpadding} )
-																											 ));
+			my $axis_defaults = {type=>"axis"};
+			Circos::Track::assign_defaults([$axis_defaults],{});
+
+			for my $ideogram (@IDEOGRAMS) { # @ideograms_with_data) {
+
+				$r0 = unit_parse( seek_parameter( "r0", @param_path ), $ideogram );
+				$r1 = unit_parse( seek_parameter( "r1", @param_path ), $ideogram );
+
+				my ( $start, $end ) = ( $ideogram->{set}->min, $ideogram->{set}->max );
+			
+				# added at cupcake corner in Krakow :)
+				if (my $bg = seek_parameter("backgrounds",@param_path)) {
+				
+					my @bg_param_path = ($bg);
+				
+					if (match_string(seek_parameter("show",@bg_param_path),"data")) {
+						next unless defined $track->{ideogram}{ $ideogram->{idx} };
+					}
+				
+					my ($bound_min,$bound_max) = defined $plot_min && defined $plot_max ? ($plot_min,$plot_max) : ($r0,$r1);
+					my $divisions   = Circos::Division::make_ranges($bg->{background},
+																													\@bg_param_path,
+																													$bound_min,
+																													$bound_max);
+					#$plot_min,
+					#$plot_max);
+				
+					for my $division (@$divisions) {
+						my $stroke_color     = seek_parameter( "stroke_color",     $division->{block},@bg_param_path );
+						my $stroke_thickness = seek_parameter( "stroke_thickness", $division->{block},@bg_param_path );
+						my $color            = seek_parameter( "color",            $division->{block},@bg_param_path );
+					
+						my ($radius1,$radius2);					
+						if (defined $division->{y0} && defined $division->{y1}) {
+							my $radius1f   = $bound_max - $bound_min ? ($division->{y0}-$bound_min)/($bound_max-$bound_min) : $bound_min;
+							my $radius2f   = $bound_max - $bound_min ? ($division->{y1}-$bound_min)/($bound_max-$bound_min) : $bound_min;
+							if ($orientation_direction == 1) {
+								$radius1    = $r0 + ($r1-$r0)*$radius1f;
+								$radius2    = $r0 + ($r1-$r0)*$radius2f;
+							} else {
+								$radius1    = $r1 - ($r1-$r0)*$radius1f;
+								$radius2    = $r1 - ($r1-$r0)*$radius2f;
+							}
+						} else {
+							$radius1 = $r0;
+							$radius2 = $r1;
+						}
+						printdebug_group("background",$ideogram->{chr},$radius1,$radius2,$color);
+						slice(
+									image       => $IM,
+									start       => $ideogram->{set}->min,
+									end         => $ideogram->{set}->max,
+									chr         => $ideogram->{chr},
+									radius_from => $radius1,
+									radius_to   => $radius2,
+									fillcolor   => $color,
+									edgecolor   => $stroke_color,
+									edgestroke  => $stroke_thickness,
+									mapoptions  => {
+																	object_type   => "trackbg",
+																	object_label  => $track_type,
+																	object_parent => $ideogram->{chr},
+																	object_data   => {
+																										start => $ideogram->{set}->min,
+																										end   => $ideogram->{set}->max,
+																									 },
+																 },
+								 );
+					}
+				}
+			
+				# added on flight to Warsaw :)
+				if (my $axes = seek_parameter("axes",@param_path)) {
+				
+					my @axis_param_path = ($axes,$axis_defaults);
+				
+					if (match_string(seek_parameter("show",@axis_param_path),"data")) {
+						next unless defined $track->{ideogram}{ $ideogram->{idx} };
+					}
+
+					push @axis_param_path, $axis_defaults;
+
+					my $divisions       = Circos::Division::make_divisions($axes->{axis},
+																																 \@axis_param_path,
+																																 $plot_min,
+																																 $plot_max,
+																																 $r0,
+																																 $r1,
+																																);
+					for my $division (@$divisions) {
+						my $color     = seek_parameter( "color",     $division->{block},@axis_param_path );
+						my $thickness = seek_parameter( "thickness", $division->{block},@axis_param_path );
+
+						my $radiusf;
+						if (defined $plot_min && defined $plot_max) {
+							$radiusf   = $plot_max-$plot_min ? ($division->{pos}-$plot_min)/($plot_max-$plot_min) : $plot_min;
+						} else {
+							$radiusf   = $r1-$r0 ? ($division->{pos}-$r0)/abs($r1-$r0) : $r0;
+						}
+
+						my $radius;
+						if ($orientation_direction == 1) {
+							$radius    = $r0 + ($r1-$r0)*$radiusf;
+						} else {
+							$radius    = $r1 - ($r1-$r0)*$radiusf;
+						}
+						printdebug_group("axis",$ideogram->{chr},$division->{spacing},$division->{pos},$radius,$color,$thickness);
+						slice(
+									image       => $IM,
+									start       => $ideogram->{set}->min,
+									end         => $ideogram->{set}->max,
+									chr         => $ideogram->{chr},
+									radius_from => $radius,
+									radius_to   => $radius,
+									edgecolor   => $color,
+									edgestroke  => $thickness,
+									mapoptions  => {
+																	object_type   => "trackaxis",
+																	object_label  => $track_type,
+																	object_parent => $ideogram->{chr},
+																	object_data   => {
+																										start => $ideogram->{set}->min,
+																										end   => $ideogram->{set}->max,
+																									 },
+																 },
+								 );
+					}
+				}
+			}
+			printsvg(qq{</g>}) if $SVG_MAKE;
+
+			my ( $data_point_prev, $datum_prev, $data_point_next, $datum_next );
+			my $sort_funcs = {
+												text => sub { ($b->{data}[0]{w}||0) <=> ($a->{data}[0]{w}||0) },
+												default => sub {
+													( ($a->{param}{z}||0) <=> ($b->{param}{z}||0) )
+														|| ( $a->{data}[0]{chr} cmp $b->{data}[0]{chr}
+																 || $a->{data}[0]{start} <=> $b->{data}[0]{start} );
+												},
+												value_asc => sub {
+													( ($a->{param}{z}||0) <=> ($b->{param}{z}||0) )
+														|| ( $a->{data}[0]{value} <=> $b->{data}[0]{value})
+													},
+												value_desc => sub {
+													( ($a->{param}{z}||0) <=> ($b->{param}{z}||0) )
+														|| ( $b->{data}[0]{value} <=> $a->{data}[0]{value})
+													},
+												size_asc => sub {
+													( ($a->{param}{z}||0) <=> ($b->{param}{z}||0) )
+														|| ( $a->{data}[0]{end}-$a->{data}[0]{start} <=> $b->{data}[0]{end}-$b->{data}[0]{start})
+													},
+												size_desc => sub {
+													( ($a->{param}{z}||0) <=> ($b->{param}{z}||0) )
+														|| ( $b->{data}[0]{end}-$b->{data}[0]{start} <=> $a->{data}[0]{end}-$a->{data}[0]{start})
+													},
+												heatmap => sub {
+													( ($a->{param}{z}||0) <=> ($b->{param}{z}||0) ) ||
+														$b->{data}[0]{end} - $b->{data}[0]{start} <=> $a->{data}[0]{end} - $a->{data}[0]{start};
+												},
+											 };
+
+			my $f = $sort_funcs->{default};
+			if (my $sort = seek_parameter("sort",@param_path)) {
+				my $dir = seek_parameter("sort_direction",@param_path) || "asc";
+				$dir = $dir =~ /asc/ ? "asc" : "desc";
+				my $fname = sprintf("%s_%s",$sort,$dir);
+				$f    = $sort_funcs->{$fname};
+			} else {
+				$f = $sort_funcs->{$track_type} if defined $sort_funcs->{$track_type};
+			}
+
+			my @sorted_track_data = sort $f @$track_data if $track_data;
+
+		DATAPOINT:
+			for my $datum_idx ( 0..@sorted_track_data-1 ) {
+				my $datum = $sorted_track_data[$datum_idx];
+				$datum->{param}{drawn}++;
+				my $data_point = $datum->{data}[0];
+				my $data_point_set;
+				if ( $track_type eq "connector" ) {
+					# nothing to be done for connectors
+				} else {
+					# adjust this data point so that its start/end is trimmed to the chromosome
+					$data_point_set      = make_set($data_point->{start}, $data_point->{end});
+					my $chr = $data_point->{chr};
+					my $set_checked = check_data_range($data_point_set,$track_type,$chr);
+					next DATAPOINT if ! defined $set_checked;
+					$data_point_set = $set_checked;
+					$data_point->{start} = $data_point_set->min;
+					$data_point->{end} = $data_point_set->max;
+					#$data_point_set      = $data_point_set->intersect( $KARYOTYPE->{ $data_point->{chr} }{chr}{display_region}{accept} );
+					#$data_point->{start} = $data_point_set->min;
+					#$data_point->{end}   = $data_point_set->max;
+				}
+
+				# the span of the data point must fall on the same ideogram
+				my ( $i_start, $i_end ) = ( get_ideogram_idx( $data_point->{start}, $data_point->{chr} ),
+																		get_ideogram_idx( $data_point->{end},   $data_point->{chr} ) );
+				next DATAPOINT unless defined $i_start && defined $i_end && $i_start == $i_end;
+
+				my $ideogram_idx            = $i_start;
+				my $ideogram                = get_ideogram_by_idx($ideogram_idx);
+
+				$data_point->{ideogram_idx} = $i_start;
+				$data_point->{ideogram}     = $ideogram;
+
+				if ( $track_type ne "connector" ) {
+					next DATAPOINT unless $ideogram->{set}->intersect($data_point_set)->cardinality;
+				} else {
+					next DATAPOINT unless $ideogram->{set}->member( $data_point->{start} ) && $ideogram->{set}->member( $data_point->{end} );
+				}
+
+				# define the next data point, if on the same ideogram possible
+				if ( $datum_idx < @sorted_track_data - 1) {
+					$datum_next      = $sorted_track_data[ $datum_idx + 1 ];
+					$data_point_next = $datum_next->{data}[0];
+					$data_point_next->{ideogram_idx} = get_ideogram_idx( $data_point_next->{start}, $data_point_next->{chr} );
+				} else {
+					$data_point_next = undef;
+				}
+
+				################################################################
+				# connector track
+				if ( $track_type eq "connector" ) {
+					start_timer("track_connector");
+					$r0 = unit_parse( seek_parameter( "r0", $datum, @param_path ), get_ideogram_by_idx($i_start) );
+					$r1 = unit_parse( seek_parameter( "r1", $datum, @param_path ), get_ideogram_by_idx($i_start) );
+					my $rd     = abs( $r0 - $r1 );
+					my $angle0 = getanglepos( $data_point->{start}, $data_point->{chr} );
+					my $angle1 = getanglepos( $data_point->{end},   $data_point->{chr} );
+					my $svg    = { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum,@param_path) },
+						# In read_data_file, coordinates with start>end have the positions reversed and 'rev' key set
+						($angle0,$angle1) = ($angle1,$angle0) if $data_point->{rev};
+					my @dims = split( $COMMA,	seek_parameter( "connector_dims", $datum, @param_path ) );
+
+					my $thickness = seek_parameter( "thickness", $datum, @param_path );
+					my $color     = seek_parameter( "color",     $datum, @param_path );
+
+					draw_line( [ getxypos( $angle0, $r0 + $dims[0] * $rd ), 
+											 getxypos( $angle0, $r0 + ( $dims[0] + $dims[1] ) * $rd ) ],
+										 $thickness, $color,
+										 $svg );
+					if ( $angle1 > $angle0 ) {
+						my $adiff  = $angle1 - $angle0;
+						my $ainit  = $angle0;
+						my $acurr  = $ainit;
+						my $rinit  = $r0 + ( $dims[0] + $dims[1] ) * $rd;
+						my $rfinal = $r0 + ( $dims[0] + $dims[1] + $dims[2] ) * $rd;
+						my $rdiff    = abs( $rfinal - $rinit );
+						my $progress = 0;
+						while ( $acurr + $CONF{anglestep} <= $angle1 ) {
+							draw_line( [ getxypos( $acurr,$rinit + $rdiff * ( $acurr - $ainit ) / $adiff ),
+													 getxypos( $acurr+$CONF{anglestep}, $rinit + $rdiff*( $acurr + $CONF{anglestep} - $ainit )/$adiff)],
+												 $thickness, $color,
+												 $svg );
+							$acurr += $CONF{anglestep};
+						}
+						if ( $acurr < $angle1 ) {
+							draw_line( [ getxypos( $acurr, $rinit + $rdiff * ( $acurr - $ainit ) / $adiff),
+													 getxypos( $angle1, $rfinal ) ],
+												 $thickness, $color, 
+												 $svg );
+						}
+					} elsif ( $angle1 < $angle0 ) {
+						my $adiff    = $angle1 - $angle0;
+						my $ainit    = $angle0;
+						my $acurr    = $ainit;
+						my $rinit    = $r0 + ( $dims[0] + $dims[1] ) * $rd;
+						my $rfinal   = $r0 + ( $dims[0] + $dims[1] + $dims[2] ) * $rd;
+						my $rdiff    = abs( $rfinal - $rinit );
+						my $progress = 0;
+						while ( $acurr - $CONF{anglestep} >= $angle1 ) {
+							draw_line( [ getxypos( $acurr, $rinit + $rdiff*( $acurr - $ainit )/$adiff),
+													 getxypos( $acurr - $CONF{anglestep}, $rinit + $rdiff*($acurr - $CONF{anglestep} - $ainit)/$adiff) ],
+												 $thickness, $color, 
+												 $svg );
+							$acurr -= $CONF{anglestep};
+						}
+						if ( $acurr > $angle1 ) {
+							draw_line([getxypos($acurr, $rinit + $rdiff*( $acurr - $ainit )/$adiff),
+												 getxypos($angle1, $rfinal ) ],
+												$thickness, $color,
+												$svg );
+						}
+					} else {
+						my $rinit  = $r0 + ( $dims[0] + $dims[1] ) * $rd;
+						my $rfinal = $r0 + ( $dims[0] + $dims[1] + $dims[2] ) * $rd;
+						draw_line([getxypos( $angle0, $rinit ),
+											 getxypos( $angle1, $rfinal )],
+											$thickness, $color, 
+											$svg );
+					}
+					draw_line([getxypos($angle1,$r0 + ( $dims[0] + $dims[1] + $dims[2] ) * $rd),
+										 getxypos($angle1,$r0 + ( $dims[0] + $dims[1] + $dims[2] + $dims[3] ) * $rd ) ],
+										$thickness, $color, 
+										$svg );
+					stop_timer("track_connector");
+				}
+
+				################################################################
+				# Highlight
+				if ( $track_type eq "highlight" ) {
+					start_timer("track_highlight");
+					$r0 = unit_parse( seek_parameter( "r0", $datum, @param_path ), get_ideogram_by_idx($i_start) );
+					$r1 = unit_parse( seek_parameter( "r1", $datum, @param_path ), get_ideogram_by_idx($i_start) );
+					my $url = seek_parameter("url",$data_point,$datum,@param_path);
+					$url = format_url(url=>$url,param_path=>[$data_point,$datum,@param_path]);
+					slice(
+								image       => $IM,
+								start       => $data_point->{start},
+								end         => $data_point->{end},
+								chr         => $data_point->{chr},
+								radius_from => $r0,
+								radius_to   => $r1,
+								edgecolor   => seek_parameter( "stroke_color|color", $datum, @param_path ),
+								edgestroke  => seek_parameter( "stroke_thickness", $datum, @param_path),
+								fillcolor   => seek_parameter( "fill_color", $datum, @param_path ),
+								svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+								mapoptions  => {url=>$url},
+							 );
+					stop_timer("track_highlight");
+				}
+
+				my $angle = getanglepos( ( $data_point->{start} + $data_point->{end} ) / 2, $data_point->{chr} );
+
+				$r0 = unit_parse( seek_parameter( "r0", @param_path ), get_ideogram_by_idx($i_start) );
+				$r1 = unit_parse( seek_parameter( "r1", @param_path ), get_ideogram_by_idx($i_start) );
+
+				$data_point->{value_orig} = $data_point->{value};
+				my $value                 = $data_point->{value};
+
+				my ($radius,$radius0)     = ($r1,$r1);
+				my $value_outofbounds;
+
+				($radius0,$radius,$value_outofbounds) = check_value_limit(-value=>$value,
+																																	-r0=>$r0,
+																																	-r1=>$r1,
+																																	-orientation=>$orientation,
+																																	-plot_min=>$plot_min,
+																																	-plot_max=>$plot_max,
+																																	-track_type=>$track_type,
+																																	-data_point=>$data_point);
+				# -value
+				# -plot_min
+				# -plot_max
+				# -track_type
+				# -data_point
+				#
+				# return
+				# value_outofbounds
+				# radius
+				# radius0
+				sub check_value_limit {
+					my %args = @_;
+					my $value = $args{-value};
+					my $r0 = $args{-r0};
+					my $r1 = $args{-r1};
+					my $plot_min = $args{-plot_min};
+					my $plot_max = $args{-plot_max};
+					my $orientation = $args{-orientation};
+					my $track_type = $args{-track_type};
+					my $data_point = $args{-data_point};
+					my ($value_outofbounds,$radius,$radius0);
+					if (defined $value && (defined $plot_min || defined $plot_max) && $track_type ne "text") {
+						if ( defined $plot_min && defined $value && $value < $plot_min ) {
+							$value             = $plot_min;
+							$value_outofbounds = 1;
+						}
+						if ( defined $plot_max && defined $value && $value > $plot_max ) {
+							$value             = $plot_max;
+							$value_outofbounds = 1;
+						}
+						if ($value_outofbounds && defined $data_point) {
+							$data_point->{value} = $value;
+						}
+						# value floor is the axis end closer to zero
+						my $valuefloor = abs($plot_min) < abs($plot_max) ? $plot_min : $plot_max;
+						$valuefloor    = 0 if $plot_min <= 0 && $plot_max >= 0;
+
+						# orientation refers to the direction of the y-axis 
+						#
+						# in  - y-axis is oriented towards the center of the circle
+						# out - y-axis is oriented towards the outside of the circle
+						my $rd = abs( $r1 - $r0 );
+						my $dd = ($plot_max||0) - ($plot_min||0);
+						if (! $dd) {
+							$radius  = $r1;
+							$radius0 = $r1;
+						} elsif ($dd && defined $value) {
+							if ( match_string($orientation,"in") ) {
+								# radius of data point
+								$radius  = $r1 - $rd * abs( $value - $plot_min ) / $dd;
+								# radius of valuefloor
+								$radius0 = $r1 - $rd * ( $valuefloor - $plot_min ) / $dd;
+							} else {
+								# radius of data point
+								$radius  = $r0 + $rd * ( $value - $plot_min ) / $dd;
+								# radius of valuefloor
+								$radius0 = $r0 + $rd * ( $valuefloor - $plot_min ) / $dd;
+							}
+						}
+					}
+					return($radius0,$radius,$value_outofbounds);
+				}
+
+				if (0 && defined $value && (defined $plot_min || defined $plot_max) && $track_type ne "text") {
+					if ( defined $plot_min && defined $value && $value < $plot_min ) {
+						$value             = $plot_min;
+						$value_outofbounds = 1;
+					}
+					if ( defined $plot_max && defined $value && $value > $plot_max ) {
+						$value             = $plot_max;
+						$value_outofbounds = 1;
+					}
+					if ($value_outofbounds) {
+						$data_point->{value}      = $value;
+					}
+
+					# value floor is the axis end closer to zero
+					my $valuefloor = abs($plot_min) < abs($plot_max) ? $plot_min : $plot_max;
+					$valuefloor    = 0 if $plot_min <= 0 && $plot_max >= 0;
+
+					# orientation refers to the direction of the y-axis 
+					#
+					# in  - y-axis is oriented towards the center of the circle
+					# out - y-axis is oriented towards the outside of the circle
+					my $rd = abs( $r1 - $r0 );
+					my $dd = ($plot_max||0) - ($plot_min||0);
+					if (! $dd) {
+						$radius  = $r1;
+						$radius0 = $r1;
+					} elsif ($dd && defined $value) {
+						if ( match_string($orientation,"in") ) {
+							# radius of data point
+							$radius  = $r1 - $rd * abs( $value - $plot_min ) / $dd;
+							# radius of valuefloor
+							$radius0 = $r1 - $rd * ( $valuefloor - $plot_min ) / $dd;
+						} else {
+							# radius of data point
+							$radius  = $r0 + $rd * ( $value - $plot_min ) / $dd;
+							# radius of valuefloor
+							$radius0 = $r0 + $rd * ( $valuefloor - $plot_min ) / $dd;
+						}
+					}
+				}
+
+				if ( $track_type ne "text" ) {
+					$data_point->{angle}  = $angle;
+					$data_point->{radius} = $radius;
+				}
+
+				# data is clipped, not skippedv
+				if ( $value_outofbounds ) {
+					if ($track_type ne "line" && $track_type ne "histogram" && $track_type ne "scatter") {
+						#goto SKIPDATUM;
+					}
+				}
+
+				if ($value_outofbounds) {
+					if (my $data_out_of_range = seek_parameter("range",@param_path) || 
+							fetch_conf("data_out_of_range")) {
+						goto SKIPDATUM if $data_out_of_range eq "hide";
+					} else {
+						$data_point->{value}  = $value;
+					}
+				}
+
+				################################################################
+				# Text
+				if ( $track_type eq "text" ) {
+					if (! defined $data_point->{layer} ) {
+						if (seek_parameter("overflow", @param_path)) {
+							# Catch text that has not been placed, if 'overflow' is set. 
+							# For now, place the text at r0 of the track.
+							$datum->{param}{color}        = first_defined(seek_parameter("overflow_color",@param_path),
+																														seek_parameter("color",$datum,@param_path));
+							$datum->{param}{label_size}   = first_defined(seek_parameter("overflow_size",@param_path),
+																														seek_parameter("label_size",$datum,@param_path));
+							$datum->{param}{label_font}   = first_defined(seek_parameter("overflow_font",@param_path),
+																														seek_parameter("label_font",$datum,@param_path));
+							$data_point->{layer}  = 0;
+							$data_point->{radius} = unit_parse( seek_parameter( "r0", @param_path ), get_ideogram_by_idx($i_start) );
+							$data_point->{radius_shift} = 0;
+							printdebug_group("textplace","not_placed,overflow",@{$data_point}{qw(chr start end value)});;
+						} else {
+							printdebug_group("textplace","not_placed",@{$data_point}{qw(chr start end value)});;
+							goto SKIPDATUM;
+						}
+					} else {
+						printdebug_group("textplace","placed",@{$data_point}{qw(chr start end value)});
+					}
+
+					start_timer("track_text_draw");
+
+					$data_point->{radius_new}       = $data_point->{radius}     + $data_point->{radius_shift};
+					$data_point->{radius_new_label} = $data_point->{radius_new} + $data_point->{rpadding};
+					$data_point->{angle_new}        = $data_point->{angle} if ! defined $data_point->{angle_new};
+
+					my ( $ao, $ro ) = textoffset(
+																			 @{$data_point}{qw(angle_new radius_new_label)},
+																			 @{$data_point}{ $data_point->{tangential} ? qw(dimr dima) : qw(dimr dima)},
+																			 unit_strip( unit_validate( seek_parameter( "yoffset", 
+																																									$datum, 
+																																									@param_path ) || "0p",
+																																	"plots/plot/yoffset",
+																																	"p" )),
+																			 $data_point->{tangential},
+																			);
+	    
+					my ( $x, $y ) = getxypos( $data_point->{angle_new} + $ao, $data_point->{radius_new_label} + $ro );
+				
+					my $fontkey  = seek_parameter( "label_font", $datum, @param_path ) || fetch_conf("default_font") || "default";
+					my $fontfile = $CONF{fonts}{ $fontkey };
+					die "Non-existent font definition for font [$fontkey] for text track." if ! $fontfile;
+					my $labelfontfile = locate_file( file => $fontfile, name=>"label font file");
+					die "Could not find file [$fontfile] for font definition [$fontkey] for text track." if ! $labelfontfile;
+					my $fontname = get_font_name_from_file($labelfontfile);
+	    
+					my $text_angle;
+					if ( defined_and_zero(seek_parameter( "label_rotate", $datum, @param_path ) )
+							 ||
+							 seek_parameter( "label_tangential", $datum, @param_path ) ) {
+						$text_angle = $DEG2RAD * textangle( $data_point->{angle_new}, 1 );
+					} else {
+						$text_angle = $DEG2RAD * textangle( $data_point->{angle_new} );
+					}
+
+					my $labeldata = {
+													 text   => $data_point->{value},
+													 font   => $fontkey, #$labelfontfile,
+													 size   => unit_strip( unit_validate( seek_parameter( "label_size", $datum, @param_path),
+																																"plots/plot/label_size",
+																																qw(p n))),
+													 color  => seek_parameter( "color", $datum, @param_path ),
+													 angle  => $data_point->{angle_new},
+													 radius => $data_point->{radius_new_label},
+
+													 is_rotated  => seek_parameter("label_rotate",@param_path),
+													 is_parallel => seek_parameter("label_parallel",@param_path),
+													 rotation    => seek_parameter("rotation",@param_path),
+													 guides      => seek_parameter("guides",@param_path),
+													};
+	    
+					if ( seek_parameter( "show_links", @param_path ) ) {
+						my $link_orientation = seek_parameter( "link_orientation", @param_path ) || "in";
+						my @link_dims        = split( /[, ]+/, seek_parameter( "link_dims", @param_path ) );
+						@link_dims           = map { unit_strip( unit_validate( $_, "plots/plot/link_dims", "p" ) ) } @link_dims;
+		
+						#
+						#      00112223344 (link dims)
+						# LABEL  --\
+						#           \
+						#            \--  LABEL
+						#
+		
+						my $link_thickness = unit_strip( unit_validate( seek_parameter( "link_thickness", $datum, @param_path ),
+																														"plots/plot/link_thickness", ("p","n") ));
+						my $line_colors = seek_parameter( "link_color", $datum, @param_path )
+							|| seek_parameter( "color", $datum, @param_path );
+		
+						my ($astart,$aend) = @{$data_point}{qw(angle angle_new)};
+						if ($link_orientation eq "out") {
+							($astart,$aend) = ($aend,$astart);
+						}
+						draw_line([ getxypos($astart,$data_point->{radius_new} + $link_dims[0]),
+												getxypos($astart,$data_point->{radius_new} + sum( @link_dims[ 0, 1 ] )) ],
+											$link_thickness,
+											$line_colors
+										 );
+		
+						draw_line([ getxypos($astart, $data_point->{radius_new} + sum( @link_dims[ 0, 1 ] ) ),
+												getxypos($aend, 	$data_point->{radius_new} + sum( @link_dims[ 0, 1, 2 ] ) ) ],
+											$link_thickness,
+											$line_colors
+										 );
+		
+						draw_line([ getxypos($aend,	$data_point->{radius_new} + sum( @link_dims[ 0, 1, 2 ] ) ),
+												getxypos($aend,	$data_point->{radius_new} + sum( @link_dims[ 0, 1, 2, 3 ] ) ) ],
+											$link_thickness,
+											$line_colors
+										 );
+		
+					}
+					my $url = seek_parameter( "url", $datum, @param_path );
+					$url = format_url(url=>$url,param_path=>[$data_point,$datum,@param_path]);
+					Circos::Text::draw_text(%$labeldata,
+																	svg        => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum,@param_path) },
+																	mapoptions => { url  =>$url });
+					stop_timer("track_text_draw");
+				} 
+
+				################################################################
+				# Scatter
+				if ( $track_type eq "scatter" ) {
+					start_timer("track_scatter");
+					#printdumper($datum->{param});
+					my $url     = seek_parameter("url",$data_point,$datum,@param_path);
+					$url        = format_url(url=>$url,param_path=>[$data_point,$datum,@param_path]);
+					my $glyph   = seek_parameter( "glyph", $datum, @param_path );
+					my $color   = seek_parameter( "fill_color|color", $datum->{data}[0], $datum);
+				
+					if (! exists_parameter("fill_color|color",$datum->{data}[0],$datum)) {
+						for my $pair ([\$color,"color"]) {
+							my ($var,$type) = @$pair;
+							if (! defined $$var) {
+								for my $item (@{$legend->{$type}}) {
+									if ( ! defined $item->{min} && ! defined $item->{max}) {
+										$$var = $item->{value};
+									} elsif ( ! defined $item->{min} && defined $item->{max} && $value < $item->{max} ) {
+										$$var = $item->{value};
+									} elsif (! defined $item->{max} && defined $item->{min} && $value >= $item->{min} ) {
+										$$var = $item->{value};
+									} elsif (defined $item->{min} &&
+													 defined $item->{max} &&
+													 $value >= $item->{min} && $value < $item->{max}) {
+										$$var = $item->{value};
+									}
+									last if defined $$var;
 								}
 							}
-							last;
 						}
 					}
-					$data_point_prev = $data_point;
-				}
-				# keep refining this layer, until no refinements are left to make
-				goto REFINE if $refined;
-				stop_timer("track_text_refine");
-
-				if ($seek_min_height) {
-					$seek_min_height = 0;
-					printdebug_group("text", "label", "toggle seek_min_height", $seek_min_height,0 );
-				} else {
-					$seek_min_height = 1;
-					if ( !$label_placed ) {
-						printdebug_group("text", "label", "toggle seek_min_height", $seek_min_height,1 );
-						$label_not_placed++;
-						$layer++;
-						$global_min_height = undef;
-					} else {
-						printdebug_group("text", "label", "toggle seek_min_height", $seek_min_height,2 );
-						$label_not_placed = 0;
-					}
-					if ( seek_parameter( "layers", @param_path )
-							 && $layer >=
-							 seek_parameter( "layers", @param_path ) ) {
-						printdebug_group("text", "label", "toggle seek_min_height", $seek_min_height,3 );
-						$label_placed     = 0;
-						$label_not_placed = 2;
-					}
-		    
-					if ( $all_label_placed_iters{$all_label_placed}++ > 20 ) {
-						printdebug_group("text", "label", "toggle seek_min_height", $seek_min_height,4 );
-						$label_placed     = 0;
-						$label_not_placed = 2;
-					}
-				}
-				printdebug_group("text",
-												 "label",  
-												 "loopsummary",      
-												 "seekmin",              $seek_min_height,   
-												 "global_min_height",    $global_min_height, 
-												 "label_positioned",     $label_placed,      
-												 "label_not_positioned", $label_not_placed,  
-												 "all",                  $all_label_placed );
-	    } while ( $label_placed || $label_not_placed < 2 ); # TEXT LOOP
-	    stop_timer("track_text_place");
-		}
-
-		# last point plotted, by chr
-		my $prevpoint;
-
-		printsvg(qq{<g id="plot$plotid-axis">}) if $SVG_MAKE;
-
-		for my $ideogram (@IDEOGRAMS) { # @ideograms_with_data) {
-
- 	    $r0 = unit_parse( seek_parameter( "r0", @param_path ), $ideogram );
-	    $r1 = unit_parse( seek_parameter( "r1", @param_path ), $ideogram );
-
-	    my ( $start, $end ) = ( $ideogram->{set}->min, $ideogram->{set}->max );
-
-	    # added at cupcake corner in Krakow :)
-	    if (my $bg = seek_parameter("backgrounds",@param_path)) {
-
-				my @bg_param_path = ($bg);
-
-				if(match_string(seek_parameter("show",@bg_param_path),"data")) {
-					next unless defined $track->{ideogram}{ $ideogram->{idx} };
-				}
-
-				my ($bound_min,$bound_max) = defined $plot_min && defined $plot_max ? ($plot_min,$plot_max) : ($r0,$r1);
-				my $divisions   = Circos::Division::make_ranges($bg->{background},
-																												\@bg_param_path,
-																												$bound_min,
-																												$bound_max);
-				#$plot_min,
-				#$plot_max);
-				
-				for my $division (@$divisions) {
-					my $stroke_color     = seek_parameter( "stroke_color",     $division->{block},@bg_param_path );
-					my $stroke_thickness = seek_parameter( "stroke_thickness", $division->{block},@bg_param_path );
-					my $color            = seek_parameter( "color",            $division->{block},@bg_param_path );
-
-					my ($radius1,$radius2);					
-					if (defined $division->{y0} && defined $division->{y1}) {
-						my $radius1f   = $bound_max - $bound_min ? ($division->{y0}-$bound_min)/($bound_max-$bound_min) : $bound_min;
-						my $radius2f   = $bound_max - $bound_min ? ($division->{y1}-$bound_min)/($bound_max-$bound_min) : $bound_min;
-						if ($orientation_direction == 1) {
-							$radius1    = $r0 + ($r1-$r0)*$radius1f;
-							$radius2    = $r0 + ($r1-$r0)*$radius2f;
-						} else {
-							$radius1    = $r1 - ($r1-$r0)*$radius1f;
-							$radius2    = $r1 - ($r1-$r0)*$radius2f;
+					if ( $glyph eq "circle" ) {
+						my $point = [getxypos( $angle, $radius )];
+						if ($SVG_MAKE) {
+							my $radius = unit_strip(seek_parameter( "glyph_size", $datum, @param_path ))/2;
+							goto SKIPDATUM if ! $radius;
+							Circos::SVG::draw_circle(point            => $point,
+																			 radius           => $radius,
+																			 stroke_color     => seek_parameter( "stroke_color", $datum, @param_path),
+																			 stroke_thickness => unit_strip(seek_parameter( "stroke_thickness", $datum, @param_path)),
+																			 color            => $color,
+																			 attr             => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path));
 						}
-					} else {
-						$radius1 = $r0;
-						$radius2 = $r1;
-					}
-					printdebug_group("background",$ideogram->{chr},$radius1,$radius2,$color);
-					slice(
-								image       => $IM,
-								start       => $ideogram->{set}->min,
-								end         => $ideogram->{set}->max,
-								chr         => $ideogram->{chr},
-								radius_from => $radius1,
-								radius_to   => $radius2,
-								fillcolor   => $color,
-								edgecolor   => $stroke_color,
-								edgestroke  => $stroke_thickness,
-								mapoptions  => {
-																object_type   => "trackbg",
-																object_label  => $track_type,
-																object_parent => $ideogram->{chr},
-																object_data   => {
-																									start => $ideogram->{set}->min,
-																									end   => $ideogram->{set}->max,
-																								 },
-															 },
-							 );
-				}
-			}
-	    
-	    # added on flight to Warsaw :)
-	    if (my $axes = seek_parameter("axes",@param_path)) {
-
-				my @axis_param_path = ($axes);
-
-				if(match_string(seek_parameter("show",@axis_param_path),"data")) {
-					next unless defined $track->{ideogram}{ $ideogram->{idx} };
-				}
-				
-				my $divisions       = Circos::Division::make_divisions($axes->{axis},
-																															 \@axis_param_path,
-																															 $plot_min,
-																															 $plot_max,
-																															 $r0,
-																															 $r1,
-																															);
-				for my $division (@$divisions) {
-					my $color     = seek_parameter( "color",     $division->{block},@axis_param_path );
-					my $thickness = seek_parameter( "thickness", $division->{block},@axis_param_path );
-
-					my $radiusf;
-					if(defined $plot_min && defined $plot_max) {
-						$radiusf   = $plot_max-$plot_min ? ($division->{pos}-$plot_min)/($plot_max-$plot_min) : $plot_min;
-					} else {
-						$radiusf   = $r1-$r0 ? ($division->{pos}-$r0)/abs($r1-$r0) : $r0;
-					}
-					
-					my $radius;
-					if ($orientation_direction == 1) {
-						$radius    = $r0 + ($r1-$r0)*$radiusf;
-					} else {
-						$radius    = $r1 - ($r1-$r0)*$radiusf;
-					}
-					printdebug_group("axis",$ideogram->{chr},$division->{spacing},$division->{pos},$radius,$color,$thickness);
-					slice(
-								image       => $IM,
-								start       => $ideogram->{set}->min,
-								end         => $ideogram->{set}->max,
-								chr         => $ideogram->{chr},
-								radius_from => $radius,
-								radius_to   => $radius,
-								edgecolor   => $color,
-								edgestroke  => $thickness,
-								mapoptions  => {
-																object_type   => "trackaxis",
-																object_label  => $track_type,
-																object_parent => $ideogram->{chr},
-																object_data   => {
-																									start => $ideogram->{set}->min,
-																									end   => $ideogram->{set}->max,
-																								 },
-															 },
-							 );
-				}
-	    }
-		}
-		printsvg(qq{</g>}) if $SVG_MAKE;
-	
-		my ( $data_point_prev, $datum_prev, $data_point_next, $datum_next );
-		my $sort_funcs = {
-											text => sub { ($b->{data}[0]{w}||0) <=> ($a->{data}[0]{w}||0) },
-											default => sub {
-												( ($a->{param}{z}||0) <=> ($b->{param}{z}||0) )
-													|| ( $a->{data}[0]{chr} cmp $b->{data}[0]{chr}
-															 || $a->{data}[0]{start} <=> $b->{data}[0]{start} );
-											},
-											heatmap => sub {
-												( ($a->{param}{z}||0) <=> ($b->{param}{z}||0) ) ||
-													$b->{data}[0]{end} - $b->{data}[0]{start} <=> $a->{data}[0]{end} - $a->{data}[0]{start};
-											},
-										 };
-	
-		my $f = $sort_funcs->{$track_type} || $sort_funcs->{default};
-
-		my @sorted_track_data = sort $f @$track_data;
-
-	DATAPOINT:
-    for my $datum_idx ( 0..@sorted_track_data-1 ) {
-	
-			my $datum = $sorted_track_data[$datum_idx];
-			$datum->{param}{drawn}++;
-			my $data_point = $datum->{data}[0];
-			my $data_point_set;
-			if ( $track_type eq "connector" ) {
-				# nothing to be done for connectors
-			} else {
-				# adjust this data point so that its start/end is trimmed to the chromosome
-				$data_point_set      = make_set($data_point->{start}, $data_point->{end});
-				$data_point_set      = $data_point_set->intersect( $KARYOTYPE->{ $data_point->{chr} }{chr}{display_region}{accept} );
-				$data_point->{start} = $data_point_set->min;
-				$data_point->{end}   = $data_point_set->max;
-			}
-
-			# the span of the data point must fall on the same ideogram
-			my ( $i_start, $i_end ) = ( get_ideogram_idx( $data_point->{start}, $data_point->{chr} ),
-																	get_ideogram_idx( $data_point->{end},   $data_point->{chr} ) );
-			next DATAPOINT unless defined $i_start && defined $i_end && $i_start == $i_end;
-
-			my $ideogram_idx            = $i_start;
-			my $ideogram                = get_ideogram_by_idx($ideogram_idx);
-
-			$data_point->{ideogram_idx} = $i_start;
-			$data_point->{ideogram}     = $ideogram;
-
-			if ( $track_type ne "connector" ) {
-				next DATAPOINT unless $ideogram->{set}->intersect($data_point_set)->cardinality;
-			} else {
-				next DATAPOINT unless $ideogram->{set}->member( $data_point->{start} ) && $ideogram->{set}->member( $data_point->{end} );
-			}
-
-			# define the next data point, if on the same ideogram possible
-			if ( $datum_idx < @sorted_track_data - 1) {
-				$datum_next      = $sorted_track_data[ $datum_idx + 1 ];
-				$data_point_next = $datum_next->{data}[0];
-				$data_point_next->{ideogram_idx} = get_ideogram_idx( $data_point_next->{start}, $data_point_next->{chr} );
-			} else {
-				$data_point_next = undef;
-			}
-
-			################################################################
-			# connector track
-			if ( $track_type eq "connector" ) {
-				start_timer("track_connector");
-				$r0 = unit_parse( seek_parameter( "r0", $datum, @param_path ), get_ideogram_by_idx($i_start) );
-				$r1 = unit_parse( seek_parameter( "r1", $datum, @param_path ), get_ideogram_by_idx($i_start) );
-				my $rd     = abs( $r0 - $r1 );
-				my $angle0 = getanglepos( $data_point->{start}, $data_point->{chr} );
-				my $angle1 = getanglepos( $data_point->{end},   $data_point->{chr} );
-				# In read_data_file, coordinates with start>end have the positions reversed and 'rev' key set
-				($angle0,$angle1) = ($angle1,$angle0) if $data_point->{rev};
-				my @dims = split( $COMMA,	seek_parameter( "connector_dims", $datum, @param_path ) );
-
-				my $thickness = seek_parameter( "thickness", $datum, @param_path );
-				my $color     = seek_parameter( "color",     $datum, @param_path );
-
-				draw_line( [ getxypos( $angle0, $r0 + $dims[0] * $rd ), 
-										 getxypos( $angle0, $r0 + ( $dims[0] + $dims[1] ) * $rd ) ],
-									 $thickness, $color );
-				if ( $angle1 > $angle0 ) {
-					my $adiff  = $angle1 - $angle0;
-					my $ainit  = $angle0;
-					my $acurr  = $ainit;
-					my $rinit  = $r0 + ( $dims[0] + $dims[1] ) * $rd;
-					my $rfinal = $r0 + ( $dims[0] + $dims[1] + $dims[2] ) * $rd;
-					my $rdiff    = abs( $rfinal - $rinit );
-					my $progress = 0;
-					while ( $acurr + $CONF{anglestep} <= $angle1 ) {
-						draw_line( [ getxypos( $acurr,$rinit + $rdiff * ( $acurr - $ainit ) / $adiff ),
-												 getxypos( $acurr+$CONF{anglestep}, $rinit + $rdiff*( $acurr + $CONF{anglestep} - $ainit )/$adiff)],
-											 $thickness, $color );
-						$acurr += $CONF{anglestep};
-					}
-					if ( $acurr < $angle1 ) {
-						draw_line( [ getxypos( $acurr, $rinit + $rdiff * ( $acurr - $ainit ) / $adiff),
-												 getxypos( $angle1, $rfinal ) ],
-											 $thickness, $color );
-					}
-				} elsif ( $angle1 < $angle0 ) {
-					my $adiff    = $angle1 - $angle0;
-					my $ainit    = $angle0;
-					my $acurr    = $ainit;
-					my $rinit    = $r0 + ( $dims[0] + $dims[1] ) * $rd;
-					my $rfinal   = $r0 + ( $dims[0] + $dims[1] + $dims[2] ) * $rd;
-					my $rdiff    = abs( $rfinal - $rinit );
-					my $progress = 0;
-					while ( $acurr - $CONF{anglestep} >= $angle1 ) {
-						draw_line( [ getxypos( $acurr, $rinit + $rdiff*( $acurr - $ainit )/$adiff),
-												 getxypos( $acurr - $CONF{anglestep}, $rinit + $rdiff*($acurr - $CONF{anglestep} - $ainit)/$adiff) ],
-											 $thickness, $color );
-						$acurr -= $CONF{anglestep};
-					}
-					if ( $acurr > $angle1 ) {
-						draw_line([getxypos($acurr, $rinit + $rdiff*( $acurr - $ainit )/$adiff),
-											 getxypos($angle1, $rfinal ) ],
-											 $thickness, $color );
-					}
-				} else {
-					my $rinit  = $r0 + ( $dims[0] + $dims[1] ) * $rd;
-					my $rfinal = $r0 + ( $dims[0] + $dims[1] + $dims[2] ) * $rd;
-					draw_line([getxypos( $angle0, $rinit ),
-										 getxypos( $angle1, $rfinal )],
-										$thickness, $color );
-				}
-				draw_line([getxypos($angle1,$r0 + ( $dims[0] + $dims[1] + $dims[2] ) * $rd),
-									 getxypos($angle1,$r0 + ( $dims[0] + $dims[1] + $dims[2] + $dims[3] ) * $rd ) ],
-										$thickness, $color );
-				stop_timer("track_connector");
-			}
-
-			################################################################
-			# Highlight
-			if ( $track_type eq "highlight" ) {
-				start_timer("track_highlight");
-				$r0 = unit_parse( seek_parameter( "r0", $datum, @param_path ), get_ideogram_by_idx($i_start) );
-				$r1 = unit_parse( seek_parameter( "r1", $datum, @param_path ), get_ideogram_by_idx($i_start) );
-				my $url = seek_parameter("url",$data_point,$datum,@param_path);
-				$url = format_url(url=>$url,param_path=>[$data_point,$datum,@param_path]);
-				slice(
-							image       => $IM,
-							start       => $data_point->{start},
-							end         => $data_point->{end},
-							chr         => $data_point->{chr},
-							radius_from => $r0,
-							radius_to   => $r1,
-							edgecolor   => seek_parameter( "stroke_color", $datum, @param_path ),
-							edgestroke  => seek_parameter( "stroke_thickness", $datum, @param_path),
-							fillcolor   => seek_parameter( "fill_color", $datum, @param_path ),
-							mapoptions  => {url=>$url},
-						 );
-				stop_timer("track_highlight");
-			}
-	
-			my $angle = getanglepos( ( $data_point->{start} + $data_point->{end} ) / 2, $data_point->{chr} );
-
-			$r0 = unit_parse( seek_parameter( "r0", @param_path ), get_ideogram_by_idx($i_start) );
-			$r1 = unit_parse( seek_parameter( "r1", @param_path ), get_ideogram_by_idx($i_start) );
-
-			my $value = $data_point->{value};
-			my ($radius,$radius0) = ($r1,$r1);
-			my $value_outofbounds;
-
-			if (defined $value && $track_type ne "text") {
-				if ( defined $plot_min && defined $value && $value < $plot_min ) {
-					$value             = $plot_min;
-					$value_outofbounds = 1;
-				}
-				if ( defined $plot_max && defined $value && $value > $plot_max ) {
-					$value             = $plot_max;
-					$value_outofbounds = 1;
-				}
-				if ($value_outofbounds) {
-					$data_point->{value}  = $value;
-				}
-
-				# value floor is the axis end closer to zero
-				my $valuefloor = abs($plot_min) < abs($plot_max) ? $plot_min : $plot_max;
-				$valuefloor    = 0 if $plot_min <= 0 && $plot_max >= 0;
-
-				# orientation refers to the direction of the y-axis 
-				# 
-				# in  - y-axis is oriented towards the center of the circle
-				# out - y-axis is oriented towards the outside of the circle
-				my $rd = abs( $r1 - $r0 );
-				my $dd = ($plot_max||0) - ($plot_min||0);
-				if (! $dd) {
-					$radius  = $r1;
-					$radius0 = $r1;
-				} elsif ($dd && defined $value) {
-					if ( match_string($orientation,"in") ) {
-						# radius of data point
-						$radius  = $r1 - $rd * abs( $value - $plot_min ) / $dd;
-						# radius of valuefloor
-						$radius0 = $r1 - $rd * ( $valuefloor - $plot_min ) / $dd;
-					} else {
-						# radius of data point
-						$radius  = $r0 + $rd * ( $value - $plot_min ) / $dd;
-						# radius of valuefloor
-						$radius0 = $r0 + $rd * ( $valuefloor - $plot_min ) / $dd;
-					}
-				}
-			}
-	
-			if ( $track_type ne "text" ) {
-				$data_point->{angle}  = $angle;
-				$data_point->{radius} = $radius;
-			}
-	
-			# data is clipped, not skippedv
-			if ( $value_outofbounds ) {
-				if ($track_type ne "line" && $track_type ne "histogram" && $track_type ne "scatter") {
-					#goto SKIPDATUM;
-				}
-			}
-
-			if ($value_outofbounds) {
-				if (my $data_out_of_range = seek_parameter("range",@param_path) || fetch_conf("data_out_of_range")) {
-					goto SKIPDATUM if $data_out_of_range eq "hide";
-				} else {
-					$data_point->{value}  = $value;
-				}
-			}
-
-			################################################################
-			# Text
-			if ( $track_type eq "text" ) {
-				if (! defined $data_point->{layer} ) {
-					if(seek_parameter("overflow", @param_path)) {
-						# Catch text that has not been placed, if 'overflow' is set. 
-						# For now, place the text at r0 of the track.
-						$datum->{param}{color}        = first_defined(seek_parameter("overflow_color",@param_path),
-																													seek_parameter("color",$datum,@param_path));
-						$datum->{param}{label_size}   = first_defined(seek_parameter("overflow_size",@param_path),
-																													seek_parameter("label_size",$datum,@param_path));
-						$datum->{param}{label_font}   = first_defined(seek_parameter("overflow_font",@param_path),
-																													seek_parameter("label_font",$datum,@param_path));
-						$data_point->{layer}  = 0;
-						$data_point->{radius} = unit_parse( seek_parameter( "r0", @param_path ), get_ideogram_by_idx($i_start) );
-						$data_point->{radius_shift} = 0;
-						printdebug_group("textplace","not_placed,overflow",@{$data_point}{qw(chr start end value)});;
-					} else {
-						printdebug_group("textplace","not_placed",@{$data_point}{qw(chr start end value)});;
-						goto SKIPDATUM;
-					}
-				} else {
-					printdebug_group("textplace","placed",@{$data_point}{qw(chr start end value)});
-				}
-
-				start_timer("track_text_draw");
-
-				$data_point->{radius_new}       = $data_point->{radius}     + $data_point->{radius_shift};
-				$data_point->{radius_new_label} = $data_point->{radius_new} + $data_point->{rpadding};
-				$data_point->{angle_new}        = $data_point->{angle} if ! defined $data_point->{angle_new};
-
-				my ( $ao, $ro ) = textoffset(
-																		 @{$data_point}{qw(angle_new radius_new_label)},
-																		 @{$data_point}{ $data_point->{tangential} ? qw(dimr dima) : qw(dimr dima)},
-																		 unit_strip( unit_validate( seek_parameter( "yoffset", 
-																																								$datum, 
-																																								@param_path ) || "0p",
-																																"plots/plot/yoffset",
-																																"p" )),
-																		 $data_point->{tangential},
-																		);
-	    
-				my ( $x, $y ) = getxypos( $data_point->{angle_new} + $ao, $data_point->{radius_new_label} + $ro );
-				
-				my $fontkey  = seek_parameter( "label_font", $datum, @param_path ) || fetch_conf("default_font") || "default";
-				my $fontfile = $CONF{fonts}{ $fontkey };
-				die "Non-existent font definition for font [$fontkey] for text track." if ! $fontfile;
-				my $labelfontfile = locate_file( file => $fontfile, name=>"label font file");
-				die "Could not find file [$fontfile] for font definition [$fontkey] for text track." if ! $labelfontfile;
-				my $fontname = get_font_name_from_file($labelfontfile);
-	    
-				my $text_angle;
-				if ( defined_and_zero(seek_parameter( "label_rotate", $datum, @param_path ) )
-						 ||
-						 seek_parameter( "label_tangential", $datum, @param_path ) ) {
-					$text_angle = $DEG2RAD * textangle( $data_point->{angle_new}, 1 );
-				} else {
-					$text_angle = $DEG2RAD * textangle( $data_point->{angle_new} );
-				}
-
-				my $labeldata = {
-												 text   => $data_point->{value},
-												 font   => $fontkey, #$labelfontfile,
-												 size   => unit_strip( unit_validate( seek_parameter( "label_size", $datum, @param_path),
-																															"plots/plot/label_size",
-																															qw(p n))),
-												 color  => seek_parameter( "color", $datum, @param_path ),
-												 angle  => $data_point->{angle_new},
-												 radius => $data_point->{radius_new_label},
-
-												 is_rotated  => seek_parameter("label_rotate",@param_path),
-												 is_parallel => seek_parameter("label_parallel",@param_path),
-												 rotation    => seek_parameter("rotation",@param_path),
-												 guides      => seek_parameter("guides",@param_path),
-												};
-	    
-				if ( seek_parameter( "show_links", @param_path ) ) {
-					my $link_orientation = seek_parameter( "link_orientation", @param_path ) || "in";
-					my @link_dims        = split( /[, ]+/, seek_parameter( "link_dims", @param_path ) );
-					@link_dims           = map { unit_strip( unit_validate( $_, "plots/plot/link_dims", "p" ) ) } @link_dims;
-		
-					#
-					#      00112223344 (link dims)
-					# LABEL  --\
-					#           \
-					#            \--  LABEL
-					#
-		
-					my $link_thickness = unit_strip( unit_validate( seek_parameter( "link_thickness", $datum, @param_path ),
-																													"plots/plot/link_thickness", ("p","n") ));
-					my $line_colors = seek_parameter( "link_color", $datum, @param_path )
-						|| seek_parameter( "color", $datum, @param_path );
-		
-					my ($astart,$aend) = @{$data_point}{qw(angle angle_new)};
-					if ($link_orientation eq "out") {
-						($astart,$aend) = ($aend,$astart);
-					}
-					draw_line([ getxypos($astart,$data_point->{radius_new} + $link_dims[0]),
-											getxypos($astart,$data_point->{radius_new} + sum( @link_dims[ 0, 1 ] )) ],
-										$link_thickness,
-										$line_colors
-									 );
-		
-					draw_line([ getxypos($astart, $data_point->{radius_new} + sum( @link_dims[ 0, 1 ] ) ),
-											getxypos($aend, 	$data_point->{radius_new} + sum( @link_dims[ 0, 1, 2 ] ) ) ],
-										$link_thickness,
-										$line_colors
-									 );
-		
-					draw_line([ getxypos($aend,	$data_point->{radius_new} + sum( @link_dims[ 0, 1, 2 ] ) ),
-											getxypos($aend,	$data_point->{radius_new} + sum( @link_dims[ 0, 1, 2, 3 ] ) ) ],
-										$link_thickness,
-										$line_colors
-									 );
-		
-				}
-				my $url = seek_parameter( "url", $datum, @param_path );
-				$url = format_url(url=>$url,param_path=>[$data_point,$datum,@param_path]);
-				Circos::Text::draw_text(%$labeldata,
-																mapoptions => { url=>$url });
-				stop_timer("track_text_draw");
-			} 
-
-			################################################################
-			# Scatter
-			if ( $track_type eq "scatter" ) {
-				start_timer("track_scatter");
-				my $url   = seek_parameter("url",$data_point,$datum,@param_path);
-				$url      = format_url(url=>$url,param_path=>[$data_point,$datum,@param_path]);
-				my $glyph = seek_parameter( "glyph", $datum, @param_path );
-				if ( $glyph eq "circle" ) {
-					my $point = [getxypos( $angle, $radius )];
-					if ($SVG_MAKE) {
-						Circos::SVG::draw_circle(point            => $point,
-																		 radius           => unit_strip(seek_parameter( "glyph_size", $datum, @param_path ))/2,
-																		 stroke_color     => seek_parameter( "stroke_color", $datum, @param_path),
-																		 stroke_thickness => unit_strip(seek_parameter( "stroke_thickness", $datum, @param_path)),
-																		 color            => seek_parameter( "fill_color|color", $datum, @param_path));
-					}
-					if ($PNG_MAKE) {
-						Circos::PNG::draw_arc(point             => $point,
-																	width             => unit_strip(seek_parameter("glyph_size", $datum, @param_path )),
-																	stroke_color      => seek_parameter("stroke_color", $datum, @param_path ),
-																	stroke_thickness  => seek_parameter("stroke_thickness", $datum, @param_path ),
-																	color             => seek_parameter("fill_color|color", $datum, @param_path ));
+						if ($PNG_MAKE) {
+							my $width = unit_strip(seek_parameter("glyph_size", $datum, @param_path ));
+							goto SKIPDATUM if ! $width;
+							Circos::PNG::draw_arc(point             => $point,
+																		width             => $width,
+																		stroke_color      => seek_parameter("stroke_color", $datum, @param_path ),
+																		stroke_thickness  => seek_parameter("stroke_thickness", $datum, @param_path ),
+																		color             => $color);
+							if ($url && $width) {
+								my ($x,$y) = @$point;
+								my $r      = unit_strip(seek_parameter("glyph_size", $datum,@param_path));
+								my $xshift = $CONF{image}{image_map_xshift}||0;
+								my $yshift = $CONF{image}{image_map_xshift}||0;
+								my $xmult  = $CONF{image}{image_map_xfactor}||1;
+								my $ymult  = $CONF{image}{image_map_yfactor}||1;
+								my @coords = ($x*$xmult + $xshift , $y*$ymult + $yshift, $r*$xmult);
+								report_image_map(shape=>"circle",coords=>\@coords,href=>$url);
+							}
+						}
+					} elsif (grep($glyph eq $_, qw(rectangle square triangle cross)) || $glyph =~ /gon/ ) {
+						my ($x,$y)    = getxypos( $angle, $radius );
+						my $size      = unit_strip(seek_parameter( "glyph_size", $datum, @param_path ));
+						goto SKIPDATUM if ! $size;
+						my $size_half = $size/2;
+						my $poly = GD::Polygon->new();
+						my @pts;
+						if ( $glyph eq "rectangle" || $glyph eq "square" ) {
+							@pts = (
+											[ $x - $size_half, $y - $size_half ],
+											[ $x + $size_half, $y - $size_half ],
+											[ $x + $size_half, $y + $size_half ],
+											[ $x - $size_half, $y + $size_half ]
+										 );
+						} elsif ( $glyph eq "triangle" ) {
+							@pts = (
+											[ $x, $y - $size_half * $SQRT3_HALF              ],
+											[ $x + $size_half, $y + $size_half * $SQRT3_HALF ],
+											[ $x - $size_half, $y + $size_half * $SQRT3_HALF ]
+										 );
+						} elsif ( $glyph eq "cross" ) {
+							@pts = (
+											[ $x,              $y - $size_half ],
+											[ $x,              $y ],
+											[ $x + $size_half, $y ],
+											[ $x,              $y ],
+											[ $x,              $y + $size_half ],
+											[ $x,              $y ],
+											[ $x - $size_half, $y ],
+											[ $x,              $y ]
+										 );
+						} elsif ( $glyph =~ /ngon(\d+)?/ || $glyph =~ /(\d+)?gon$/ ) {
+							my $sides = $1 || 5;
+							for my $side ( 0 .. $sides - 1 ) {
+								my $angle = 360 * $side / $sides;
+								push @pts, [ $x + $size_half * cos( $angle * $DEG2RAD ),
+														 $y + $size_half * sin( $angle * $DEG2RAD ) ];
+							}
+						}
+						my $angle_shift = seek_parameter( "angle_shift|glyph_rotation", $datum, @param_path ) || 0;
+						map { $poly->addPt(@$_) } map { [ rotate_xy( @$_, $x, $y, $angle + $angle_shift ) ] } @pts;
+						my $url = seek_parameter("url",$datum,@param_path);
+						$url    = format_url(url=>$url,param_path=>[$data_point,$datum,@param_path]);
 						if ($url) {
-							my ($x,$y) = @$point;
-							my $r      = unit_strip(seek_parameter("glyph_size", $datum,@param_path));
 							my $xshift = $CONF{image}{image_map_xshift}||0;
 							my $yshift = $CONF{image}{image_map_xshift}||0;
 							my $xmult  = $CONF{image}{image_map_xfactor}||1;
 							my $ymult  = $CONF{image}{image_map_yfactor}||1;
-							my @coords = ($x*$xmult + $xshift , $y*$ymult + $yshift, $r*$xmult);
-							report_image_map(shape=>"circle",coords=>\@coords,href=>$url);
+							my @coords = map { ( $_->[0]*$xmult + $xshift , $_->[1]*$ymult + $yshift ) } $poly->vertices;
+							report_image_map(shape=>"poly",coords=>\@coords,href=>$url);
+						}
+						if ($PNG_MAKE) {
+							Circos::PNG::draw_polygon(polygon    => $poly,
+																				thickness  => unit_strip(seek_parameter("stroke_thickness|thickness", $datum, @param_path ),"p"),
+																				fill_color => $glyph eq "cross" ? undef : seek_parameter("fill_color|color", $datum, @param_path ),
+																				color      => seek_parameter("stroke_color", $datum, @param_path ));
+						}
+						if ($SVG_MAKE) {
+							Circos::SVG::draw_polygon(polygon    => $poly,
+																				thickness  => unit_strip(seek_parameter("stroke_thickness|thickness", $datum, @param_path ),"p"),
+																				linecap    => seek_parameter("stroke_linecap|linecap", $datum, @param_path ),
+																				fill_color => $glyph eq "cross" ? undef : seek_parameter("fill_color|color", $datum, @param_path ),
+																				color      => seek_parameter("stroke_color", $datum, @param_path ),
+																				attr       => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path));
 						}
 					}
-				} elsif (grep($glyph eq $_, qw(rectangle square triangle cross)) || $glyph =~ /gon/ ) {
-					my ( $x, $y )   = getxypos( $angle, $radius );
-					my $size        = unit_strip(seek_parameter( "glyph_size", $datum, @param_path ));
-					my $size_half   = $size/2;
-					my $poly = GD::Polygon->new();
-					my @pts;
-					if ( $glyph eq "rectangle" || $glyph eq "square" ) {
-						@pts = (
-										[ $x - $size_half, $y - $size_half ],
-										[ $x + $size_half, $y - $size_half ],
-										[ $x + $size_half, $y + $size_half ],
-										[ $x - $size_half, $y + $size_half ]
-									 );
-					} elsif ( $glyph eq "triangle" ) {
-						@pts = (
-										[ $x, $y - $size_half * $SQRT3_HALF              ],
-										[ $x + $size_half, $y + $size_half * $SQRT3_HALF ],
-										[ $x - $size_half, $y + $size_half * $SQRT3_HALF ]
-									 );
-					} elsif ( $glyph eq "cross" ) {
-						@pts = (
-										[ $x,              $y - $size_half ],
-										[ $x,              $y ],
-										[ $x + $size_half, $y ],
-										[ $x,              $y ],
-										[ $x,              $y + $size_half ],
-										[ $x,              $y ],
-										[ $x - $size_half, $y ],
-										[ $x,              $y ]
-									 );
-					} elsif ( $glyph =~ /ngon(\d+)?/ || $glyph =~ /(\d+)?gon$/ ) {
-						my $sides = $1 || 5;
-						for my $side ( 0 .. $sides - 1 ) {
-							my $angle = 360 * $side / $sides;
-							push @pts, [ $x + $size_half * cos( $angle * $DEG2RAD ),
-													 $y + $size_half * sin( $angle * $DEG2RAD ) ];
-						}
-					}
-
-					my $angle_shift = seek_parameter( "angle_shift|glyph_rotation", $datum, @param_path ) || 0;
-					map { $poly->addPt(@$_) } map { [ rotate_xy( @$_, $x, $y, $angle + $angle_shift ) ] } @pts;
-	
-					my $url = seek_parameter("url",$datum,@param_path);
-					$url    = format_url(url=>$url,param_path=>[$data_point,$datum,@param_path]);
-					if ($url) {
-						my $xshift = $CONF{image}{image_map_xshift}||0;
-						my $yshift = $CONF{image}{image_map_xshift}||0;
-						my $xmult  = $CONF{image}{image_map_xfactor}||1;
-						my $ymult  = $CONF{image}{image_map_yfactor}||1;
-						my @coords = map { ( $_->[0]*$xmult + $xshift , $_->[1]*$ymult + $yshift ) } $poly->vertices;
-						report_image_map(shape=>"poly",coords=>\@coords,href=>$url);
-					}
-					if ($PNG_MAKE) {
-						Circos::PNG::draw_polygon(polygon    => $poly,
-																			thickness  => unit_strip(seek_parameter("stroke_thickness|thickness", $datum, @param_path ),"p"),
-																			fill_color => $glyph eq "cross" ? undef : seek_parameter("fill_color|color", $datum, @param_path ),
-																			color      => seek_parameter("stroke_color", $datum, @param_path ));
-					}
-					if ($SVG_MAKE) {
-						Circos::SVG::draw_polygon(polygon  => $poly,
-																			thickness  => unit_strip(seek_parameter("stroke_thickness|thickness", $datum, @param_path ),"p"),
-																			linecap    => seek_parameter("stroke_linecap|linecap", $datum, @param_path ),
-																			fill_color => $glyph eq "cross" ? undef : seek_parameter("fill_color|color", $datum, @param_path ),
-																			color      => seek_parameter("stroke_color", $datum, @param_path ));
-					}
+					stop_timer("track_scatter");
 				}
-				stop_timer("track_scatter");
-			}
 
-			################################################################
-			# Line or histogram
-			if ( $track_type eq "line" || $track_type eq "histogram" ) {
+				################################################################
+				# Line or histogram
+				if ( $track_type eq "line" || $track_type eq "histogram" ) {
 
-				my $url = seek_parameter("url",$data_point,$datum,@param_path);
-				$url = format_url(url=>$url,param_path=>[$data_point,$datum,@param_path]);
+					my $url = seek_parameter("url",$data_point,$datum,@param_path);
+					$url = format_url(url=>$url,param_path=>[$data_point,$datum,@param_path]);
 
-				# Check whether adjacent data points should be fused. First, we check
-				# whether they pass a gap test, set by max_gap. If max_gap is not defined,
-				# then by default this test passes.
+					# Check whether adjacent data points should be fused. First, we check
+					# whether they pass a gap test, set by max_gap. If max_gap is not defined,
+					# then by default this test passes.
 
-				my $gap_pass = 1;
-				my $gap_size;
+					my $gap_pass = 1;
+					my $gap_size;
 
-				if ( $data_point_prev && $data_point_prev->{ideogram_idx} == $data_point->{ideogram_idx} ) {
-					my $max_gap  = seek_parameter( "max_gap", @param_path );
-					$gap_size = $data_point->{start} - $data_point_prev->{end};
-					if ( $gap_size > 1 && defined $max_gap) {
-						# test gap if the points are further than one unit apart on the scale and if max_gap is defined
-						unit_validate( $max_gap, "plots/plot/max_gap", qw(u n p b) );
-						my ( $max_gap_value, $max_gap_unit ) = unit_split( $max_gap, "plots/plot/max_gap" );
-						if ( $max_gap_unit =~ /[bun]/ ) {
-							if ($max_gap_unit eq "u") {
-								$max_gap_value = unit_convert(from=>$max_gap,	to=>"b", factors => { ub => $CONF{chromosomes_units} } );
+					if ( $data_point_prev && $data_point_prev->{ideogram_idx} == $data_point->{ideogram_idx} ) {
+						my $max_gap  = seek_parameter( "max_gap", @param_path );
+						$gap_size = $data_point->{start} - $data_point_prev->{end};
+						if ( $gap_size > 1 && defined $max_gap) {
+							# test gap if the points are further than one unit apart on the scale and if max_gap is defined
+							unit_validate( $max_gap, "plots/plot/max_gap", qw(u n p b) );
+							my ( $max_gap_value, $max_gap_unit ) = unit_split( $max_gap, "plots/plot/max_gap" );
+							if ( $max_gap_unit =~ /[bun]/ ) {
+								if ($max_gap_unit eq "u") {
+									$max_gap_value = unit_convert(from=>$max_gap,	to=>"b", factors => { ub => $CONF{chromosomes_units} } );
+								}
+								my $d = $data_point->{start} - $data_point_prev->{end};
+								$gap_pass = 0 if $d > $max_gap_value;
+							} elsif ($max_gap_unit eq "p") {
+								$max_gap_value = unit_strip($max_gap_value);
+								my ( $xp, $yp ) = getxypos( @{$data_point_prev}{qw(angle radius)} );
+								my ( $x, $y )   = getxypos( @{$data_point}{qw(angle radius)} );
+								my $d = sqrt( ( $xp - $x )**2 + ( $yp - $y )**2 );
+								$gap_pass = 0 if $d > $max_gap_value;
+							} else {
+								confess "Bad max_gap unit";
 							}
-							my $d = $data_point->{start} - $data_point_prev->{end};
-							$gap_pass = 0 if $d > $max_gap_value;
-						} elsif ($max_gap_unit eq "p") {
-							$max_gap_value = unit_strip($max_gap_value);
-							my ( $xp, $yp ) = getxypos( @{$data_point_prev}{qw(angle radius)} );
-							my ( $x, $y )   = getxypos( @{$data_point}{qw(angle radius)} );
-							my $d = sqrt( ( $xp - $x )**2 + ( $yp - $y )**2 );
-							$gap_pass = 0 if $d > $max_gap_value;
-						} else {
-							confess "Bad max_gap unit";
 						}
+						if ( ! $gap_pass ) {
+							goto SKIPDATUM if $track_type eq "line";
+						}
+					} else {
+						$gap_pass = 0;
 					}
-					if ( ! $gap_pass ) {
-						goto SKIPDATUM if $track_type eq "line";
-					}
-				} else {
-					$gap_pass = 0;
-				}
 
-				my $thickness = seek_parameter( "thickness|stroke_thickness", $datum, @param_path );
-				$thickness    = unit_strip($thickness,"p");
-				my $color1    = seek_parameter( "color", $datum_prev || $datum, @param_path);
-				my $color2    = seek_parameter( "color", $datum, @param_path);
+					my $thickness = seek_parameter( "thickness|stroke_thickness", $datum, @param_path );
+					$thickness    = unit_strip($thickness,"p");
+					my $color1    = seek_parameter( "color", $datum_prev || $datum, @param_path);
+					my $color2    = seek_parameter( "color", $datum, @param_path);
 
-				if ( $track_type eq "line" ) {
+					if ( $track_type eq "line" ) {
 
-					start_timer("track_line");
+				    start_timer("track_line");
 
-					goto SKIPDATUM unless $data_point_prev;
-					goto SKIPDATUM if $data_point->{ideogram_idx} != $data_point_prev->{ideogram_idx};
+						#printinfo(@{$data_point}{qw(chr start end)});
 
-					my ( $xp, $yp ) = getxypos( @{$data_point_prev}{qw(angle radius)} );
-					my ( $x, $y )   = getxypos( @{$data_point}{qw(angle radius)} );
+				    goto SKIPDATUM unless $data_point_prev;
+				    goto SKIPDATUM if $data_point->{ideogram_idx} != $data_point_prev->{ideogram_idx};
 
-					my $fill_color  = seek_parameter("fill_color",  $datum, @param_path);
-					my $fill_color1 = seek_parameter("fill_color",  $datum_prev || $datum, @param_path);
-					my $fill_color2 = seek_parameter("fill_color",  $datum, @param_path);
+				    my ( $xp, $yp ) = getxypos( @{$data_point_prev}{qw(angle radius)} );
+				    my ( $x, $y )   = getxypos( @{$data_point}{qw(angle radius)} );
 
-					if($fill_color1 && $fill_color2) {
-						if($fill_color1 ne $fill_color2) {
+				    my $fill_color  = seek_parameter("fill_color",  $datum, @param_path);
+				    my $fill_color1 = seek_parameter("fill_color",  $datum_prev || $datum, @param_path);
+				    my $fill_color2 = seek_parameter("fill_color",  $datum, @param_path);
+
+				    if ($fill_color1 && $fill_color2) {
+							if ($fill_color1 ne $fill_color2) {
+								my $xxp = $x + $xp;
+								my $yyp = $y + $yp;
+								draw_line([    $xp,    $yp, $xxp/2, $yyp/2], $thickness,	$color1 );
+								draw_line([ $xxp/2, $yyp/2,     $x,     $y], $thickness,	$color2 );
+								slice(
+											image        => $IM,
+											start        => ($data_point_prev->{start}+$data_point_prev->{end})/2,
+											end          => (($data_point_prev->{start}+$data_point_prev->{end})/2+($data_point->{start}+$data_point->{end})/2)/2,
+											chr          => $data_point->{chr},
+											radius_from  => $radius0,
+											radius_to_y0 => $data_point_prev->{radius},
+											radius_to_y1 => ($data_point->{radius}+$data_point_prev->{radius})/2,
+											edgestroke   => 0,
+											edgecolor    => $fill_color1,
+											fillcolor    => $fill_color1,
+											svg          => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+											mapoptions   => {url=>$url},
+										 );
+								slice(
+											image        => $IM,
+											start        => (($data_point_prev->{start}+$data_point_prev->{end})/2+($data_point->{start}+$data_point->{end})/2)/2,
+											end          => ($data_point->{start}+$data_point->{end})/2,
+											chr          => $data_point->{chr},
+											radius_from  => $radius0,
+											radius_to_y0 => ($data_point->{radius}+$data_point_prev->{radius})/2,
+											radius_to_y1 => $data_point->{radius},
+											edgestroke   => 0,
+											edgecolor    => $fill_color2,
+											fillcolor    => $fill_color2,
+											svg          => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+											mapoptions   => {url=>$url},
+										 );
+							} else {
+								slice(
+											image        => $IM,
+											start        => ($data_point_prev->{start}+$data_point_prev->{end})/2,
+											end          => ($data_point->{start}+$data_point->{end})/2,
+											chr          => $data_point->{chr},
+											radius_from  => $radius0,
+											radius_to_y0 => $data_point_prev->{radius},
+											radius_to_y1 => $data_point->{radius},
+											edgestroke   => 0,
+											edgecolor    => $fill_color1,
+											fillcolor    => $fill_color1,
+											svg          => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+											mapoptions   => {url=>$url},
+										 );
+							}
+				    } elsif ($fill_color) {
+							slice(
+										image        => $IM,
+										start        => ($data_point_prev->{start}+$data_point_prev->{end})/2,
+										end          => ($data_point->{start}+$data_point->{end})/2,
+										chr          => $data_point->{chr},
+										radius_from  => $radius0,
+										radius_to_y0 => $data_point_prev->{radius},
+										radius_to_y1 => $data_point->{radius},
+										edgestroke   => 0,
+										edgecolor    => $fill_color,
+										fillcolor    => $fill_color,
+										svg          => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+										mapoptions   => {url=>$url},
+									 );
+				    }
+
+				    if ( $color1 ne $color2 ) {
 							my $xxp = $x + $xp;
 							my $yyp = $y + $yp;
-							draw_line([    $xp,    $yp, $xxp/2, $yyp/2], $thickness,	$color1 );
-							draw_line([ $xxp/2, $yyp/2,     $x,     $y], $thickness,	$color2 );
-							slice(
-										image        => $IM,
-										start        => ($data_point_prev->{start}+$data_point_prev->{end})/2,
-										end          => (($data_point_prev->{start}+$data_point_prev->{end})/2+($data_point->{start}+$data_point->{end})/2)/2,
-										chr          => $data_point->{chr},
-										radius_from  => $radius0,
-										radius_to_y0 => $data_point_prev->{radius},
-										radius_to_y1 => ($data_point->{radius}+$data_point_prev->{radius})/2,
-										edgestroke   => 0,
-										edgecolor    => $fill_color1,
-										fillcolor    => $fill_color1,
-										mapoptions   => {url=>$url},
-									 );
-							slice(
-										image        => $IM,
-										start        => (($data_point_prev->{start}+$data_point_prev->{end})/2+($data_point->{start}+$data_point->{end})/2)/2,
-										end          => ($data_point->{start}+$data_point->{end})/2,
-										chr          => $data_point->{chr},
-										radius_from  => $radius0,
-										radius_to_y0 => ($data_point->{radius}+$data_point_prev->{radius})/2,
-										radius_to_y1 => $data_point->{radius},
-										edgestroke   => 0,
-										edgecolor    => $fill_color2,
-										fillcolor    => $fill_color2,
-										mapoptions   => {url=>$url},
-									 );
-						} else {
-							slice(
-										image        => $IM,
-										start        => ($data_point_prev->{start}+$data_point_prev->{end})/2,
-										end          => ($data_point->{start}+$data_point->{end})/2,
-										chr          => $data_point->{chr},
-										radius_from  => $radius0,
-										radius_to_y0 => $data_point_prev->{radius},
-										radius_to_y1 => $data_point->{radius},
-										edgestroke   => 0,
-										edgecolor    => $fill_color1,
-										fillcolor    => $fill_color1,
-										mapoptions   => {url=>$url},
-									 );
-						}
-					} elsif ($fill_color) {
-						slice(
-									image        => $IM,
-									start        => ($data_point_prev->{start}+$data_point_prev->{end})/2,
-									end          => ($data_point->{start}+$data_point->{end})/2,
-									chr          => $data_point->{chr},
-									radius_from  => $radius0,
-									radius_to_y0 => $data_point_prev->{radius},
-									radius_to_y1 => $data_point->{radius},
-									edgestroke   => 0,
-									edgecolor    => $fill_color,
-									fillcolor    => $fill_color,
-									mapoptions   => {url=>$url},
-								 );
-					}
+							my $svg    = { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum,@param_path) };
+							draw_line([    $xp,    $yp, $xxp/2, $yyp/2], $thickness,	$color1, $svg );
+							draw_line([ $xxp/2, $yyp/2,     $x,     $y], $thickness,	$color2, $svg );
+				    } else {
+							draw_line([ $xp, $yp, $x, $y], $thickness,	$color1);
+				    }
+				    stop_timer("track_line");
 
-					if ( $color1 ne $color2 ) {
-						my $xxp = $x + $xp;
-						my $yyp = $y + $yp;
-						draw_line([    $xp,    $yp, $xxp/2, $yyp/2], $thickness,	$color1 );
-						draw_line([ $xxp/2, $yyp/2,     $x,     $y], $thickness,	$color2 );
-					} else {
-						draw_line([ $xp, $yp, $x, $y], $thickness,	$color1);
-					}
-					stop_timer("track_line");
+					} elsif ( $track_type eq "histogram" ) {
 
-				} elsif ( $track_type eq "histogram" ) {
+				    start_timer("track_histogram");
 
-					start_timer("track_histogram");
+				    my ($first_in_series,$last_in_series);
 
-					my ($first_in_series,$last_in_series);
+				    if ( ! $data_point_prev || 
+								 $data_point_prev->{ideogram_idx} != $data_point->{ideogram_idx} ) {
+							$first_in_series = 1;
+				    }
 
-					if ( ! $data_point_prev || $data_point_prev->{ideogram_idx} != $data_point->{ideogram_idx} ) {
-						$first_in_series = 1;
-					}
-					
-					if ( ! defined $data_point_next->{ideogram_idx} ||
-							 ! defined $data_point->{ideogram_idx} ||
-							 $data_point->{ideogram_idx} != $data_point_next->{ideogram_idx}) {
-						$last_in_series = 1;
-					}
+				    if ( ! defined $data_point_next->{ideogram_idx} ||
+								 ! defined $data_point->{ideogram_idx} ||
+								 $data_point->{ideogram_idx} != $data_point_next->{ideogram_idx}) {
+							$last_in_series = 1;
+				    }
 
-					my $join_bins;
+				    my $join_bins;
 
-					# present bin will be joined to previous one if
-					# - previous bin exists, and
-					#   - bin extension has not been explicitly defined to "no", or
-					#   - previous bin end is within 1 bp of the current bin start
+				    # present bin will be joined to previous one if
+				    # - previous bin exists, and
+				    #   - bin extension has not been explicitly defined to "no", or
+				    #   - previous bin end is within 1 bp of the current bin start
 
-					my $extend_bin = seek_parameter("extend_bin",$datum,@param_path);
+				    my $extend_bin = seek_parameter("extend_bin",$datum,@param_path);
 
-					if(seek_parameter("stacked",$datum)) {
-						$join_bins = 0;
-					} elsif (defined_and_zero($extend_bin)) {
-						if (! defined $gap_size || $gap_size > 1) {
+				    if (seek_parameter("stacked",$datum) || seek_parameter("float",$datum,@param_path)) {
 							$join_bins = 0;
-						} else {
-							$join_bins = 1;
+				    } elsif (defined_and_zero($extend_bin)) {
+							if (! defined $gap_size || $gap_size > 1) {
+								$join_bins = 0;
+							} else {
+								$join_bins = 1;
+							}
+				    } else {
+							if ($gap_pass) {
+								$join_bins = 1;
+							} else {
+								$join_bins = 0;
+							}
+				    }
+						# Change the base of the bin to radius associated with 'valuebase'
+						if (seek_parameter("float",$datum,@param_path)) {
+							my $valuebase = seek_parameter("valuebase",$datum);
+							if (defined $valuebase) {
+								my ($radius0base,$radiusbase,$value_outofboundsbase) = 
+									check_value_limit(-value=>$valuebase,
+																		-r0=>$r0,
+																		-r1=>$r1,
+																		-orientation=>$orientation,
+																		-plot_min=>$plot_min,
+																		-plot_max=>$plot_max,
+																		-track_type=>$track_type,
+																		-data_point=>$data_point);
+								$radius0 = $radiusbase;
+							}
 						}
-					} else {
-						if ($gap_pass) {
-							$join_bins = 1;
-						} else {
-							$join_bins = 0;
-						}
-					}
 
-					0&&printinfo("gappass",$gap_pass,
-											 "joinbin",$join_bins,
-											 "first",$first_in_series,
-											 "last",$last_in_series,
-											 "data",
-											 $data_point_prev ? $data_point_prev->{start} : undef,
-											 $data_point->{start},$data_point->{value},
-											 $data_point_next ? $data_point_next->{start} : undef);
+				    0&&printinfo("gappass",$gap_pass,
+												 "joinbin",$join_bins,
+												 "first",$first_in_series,
+												 "last",$last_in_series,
+												 "data",
+												 $data_point_prev ? $data_point_prev->{start} : undef,
+												 $data_point->{start},$data_point->{value},
+												 $data_point_next ? $data_point_next->{start} : undef);
 
-					my $fill_color     = seek_parameter("fill_color",  $datum, @param_path);
-					my $fill_under     = $fill_color && not_defined_or_one(seek_parameter("fill_under",$datum,@param_path));
-					my $thickness      = seek_parameter("thickness",   $datum, @param_path);
-					my $stroke_type    = seek_parameter("stroke_type", $datum, @param_path) || "outline";
-					my $bin_stroke     = $stroke_type eq "bin" || $stroke_type eq "both" ? $thickness : 0;
-					my $outline_stroke = $stroke_type eq "outline" || $stroke_type eq "both" ? $thickness : 0;
-					
-					my %params = (image       => $IM,
-												fillcolor   => $fill_color,
-												edgestroke  => $bin_stroke,
-												mapoptions  => {url=>$url},
-											 );
+				    my $fill_color     = seek_parameter("fill_color",  $datum, @param_path);
+				    my $pattern        = seek_parameter("pattern",  $datum, @param_path);
+				    my $fill_under     = $fill_color && not_defined_or_one(seek_parameter("fill_under",$datum,@param_path));
+				    my $thickness      = seek_parameter("thickness|stroke_thickness",$datum,@param_path);
+						$thickness = 0 if ! defined seek_parameter("color",$datum,@param_path);
+				    my $stroke_type    = seek_parameter("stroke_type", $datum, @param_path) || "outline";
+				    my $bin_stroke     = $stroke_type eq "bin" || $stroke_type eq "both" ? $thickness : 0;
+				    my $outline_stroke = $stroke_type eq "outline" || $stroke_type eq "both" ? $thickness : 0;
 
+				    my %params = (image       => $IM,
+													fillcolor   => $fill_color,
+													edgestroke  => $bin_stroke,
+													mapoptions  => {url=>$url},
+												 );
 
-					if ( !$join_bins ) {
-						# bins are not joined
-						if ($fill_under) {
-							# floor of bin is 0 level
-							slice(
-										image       => $IM,
-										start       => $data_point->{start},
-										end         => $data_point->{end},
-										chr         => $data_point->{chr},
-										radius_from => $radius0,
-										radius_to   => $data_point->{radius},
-										fillcolor   => $fill_color,
-										edgecolor   => $color2,
-										edgestroke  => $bin_stroke,
-										mapoptions  => {url=>$url},
-									 );
-						} elsif ($bin_stroke) {
-							slice(
-										image       => $IM,
-										start       => $data_point->{start},
-										end         => $data_point->{end},
-										chr         => $data_point->{chr},
-										radius_from => $radius0,
-										radius_to   => $data_point->{radius},
-										edgecolor   => $color2,
-										edgestroke  => $bin_stroke,
-										mapoptions  => {url=>$url},
-									 );
-						}
-						if ($outline_stroke) {
-							# draw drop end of previous bin
-							if ($data_point_prev && ! $first_in_series) {
+				    if ( !$join_bins ) {
+
+							# bins are not joined
+							if ($fill_under) {
+								# floor of bin is 0 level
 								slice(
 											image       => $IM,
-											start       => $data_point_prev->{end},
-											end         => $data_point_prev->{end},
+											start       => $data_point->{start},
+											end         => $data_point->{end},
+											chr         => $data_point->{chr},
+											radius_from => $radius0,
+											radius_to   => $data_point->{radius},
+											pattern     => $pattern,
+											fillcolor   => $fill_color,
+											edgecolor   => $color2,
+											edgestroke  => $bin_stroke,
+											svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+											mapoptions  => {url=>$url},
+										 );
+							} elsif ($bin_stroke) {
+						    slice(
+											image       => $IM,
+											start       => $data_point->{start},
+											end         => $data_point->{end},
+											chr         => $data_point->{chr},
+											radius_from => $radius0,
+											radius_to   => $data_point->{radius},
+											edgecolor   => $color2,
+											edgestroke  => $bin_stroke,
+											svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+											mapoptions  => {url=>$url},
+										 );
+							}
+							if ($outline_stroke) {
+						    # draw drop end of previous bin
+						    if ($data_point_prev && ! $first_in_series) {
+									slice(
+												image       => $IM,
+												start       => $data_point_prev->{end},
+												end         => $data_point_prev->{end},
+												chr         => $data_point_prev->{chr},
+												radius_from => $data_point_prev->{radius},
+												radius_to   => $radius0,   
+												edgecolor   => $color1,
+												edgestroke  => $outline_stroke,
+												svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+											 ); 
+								} 
+								# draw drop end of current bin, if last on ideogram
+								if ($last_in_series) {
+									slice(
+												image       => $IM,
+												start       => $data_point->{end},
+												end         => $data_point->{end},
+												chr         => $data_point->{chr},
+												radius_from => $data_point->{radius},
+												radius_to   => $radius0,
+												edgecolor   => $color2,
+												edgestroke  => $outline_stroke,
+												svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+											 );
+								}
+								# draw drop start of current bin
+								slice(
+											image       => $IM,
+											start       => $data_point->{start},
+											end         => $data_point->{start},
+											chr         => $data_point->{chr},
+											radius_from => $data_point->{radius},
+											radius_to   => $radius0, #$orientation eq "in" ? $r1 : $r0,
+											edgecolor   => $color2,
+											edgestroke  => $outline_stroke,
+											svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+										 );
+								# draw roof of current bin
+								slice(
+											image       => $IM,
+											start       => $data_point->{start},
+											end         => $data_point->{end},
+											chr         => $data_point->{chr},
+											radius_from => $data_point->{radius},
+											radius_to   => $data_point->{radius},
+											edgecolor   => $color2,
+											edgestroke  => $outline_stroke,
+											svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+										 );
+							}
+						} else {
+							# bins are joined
+							my ($pos_prev_end,$pos_start,$pos_end);
+							$pos_prev_end = $data_point_prev->{end};
+							if ($data_point_prev->{end} == $data_point->{start} - 1) {
+								$pos_start = $data_point->{start};
+							} else {
+								$pos_start = ( $data_point_prev->{end} + $data_point->{start} ) / 2;
+							}
+							$pos_end = $data_point->{end};
+
+							# bins are joined
+							if ($fill_under) {
+								slice(image       => $IM,
+											start       => $pos_prev_end,
+											end         => $pos_start,
+											chr         => $data_point_prev->{chr},
+											radius_from => $radius0,
+											radius_to   => $data_point_prev->{radius},
+											fillcolor   => $fill_color,
+											pattern     => $pattern,
+											edgecolor   => $color1,
+											edgestroke  => $bin_stroke,
+											svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+											mapoptions  => {url=>$url},
+										 ) if $pos_prev_end != $pos_start - 1;
+								slice(
+											image       => $IM,
+											start       => $pos_start,
+											end         => $pos_end,
+											chr         => $data_point->{chr},
+											radius_from => $radius0,
+											radius_to   => $data_point->{radius},
+											fillcolor   => $fill_color,
+											pattern     => $pattern,
+											edgecolor   => $color2,
+											edgestroke  => $bin_stroke,
+											svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+											mapoptions  => {url=>$url},
+										 );
+							} elsif ($bin_stroke) {
+								slice(
+											image       => $IM,
+											start       => $pos_prev_end,
+											end         => $pos_start,
+											chr         => $data_point_prev->{chr},
+											radius_from => $radius0,
+											radius_to   => $data_point_prev->{radius},
+											edgecolor   => $color1,
+											edgestroke  => $bin_stroke,
+											svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+											mapoptions  => {url=>$url},
+										 ) if $pos_prev_end != $pos_start;
+								slice(
+											image       => $IM,
+											start       => $pos_start,
+											end         => $pos_end,
+											chr         => $data_point->{chr},
+											radius_from => $radius0,
+											radius_to   => $data_point->{radius},
+											edgecolor   => $color2,
+											edgestroke  => $bin_stroke,
+											svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+											mapoptions  => {url=>$url},
+										 );
+							}
+							if ($outline_stroke) {
+								slice(
+											image       => $IM,
+											start       => $pos_prev_end,
+											end         => $pos_start,
 											chr         => $data_point_prev->{chr},
 											radius_from => $data_point_prev->{radius},
-											radius_to   => $radius0,   
+											radius_to   => $data_point_prev->{radius},
 											edgecolor   => $color1,
 											edgestroke  => $outline_stroke,
-										 ); 
-							} 
-							# draw drop end of current bin, if last on ideogram
+											svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+										 ) if $pos_prev_end != $pos_start;
+
+								if ( ! match_string($color1,$color2) ) {
+									my ( $r_min, $r_max, $join_color ) =
+										abs( $data_point_prev->{radius} - $radius0 ) <
+											abs( $data_point->{radius} - $radius0 )
+												? (
+													 $data_point_prev->{radius},
+													 $data_point->{radius}, $color2
+													)
+													: (
+														 $data_point->{radius},
+														 $data_point_prev->{radius}, $color1
+														);
+			    
+									if ( ( $r_min < $radius0 && $r_max > $radius0 )
+											 || ( $r_max < $radius0
+														&& 
+														$r_min > $radius0 )
+										 ) {
+										slice(
+													image => $IM,
+													start => $pos_start,
+													end   => $pos_start,
+													chr   => $data_point_prev->{chr},
+													radius_from => $data_point_prev->{radius},
+													radius_to   => $radius0,
+													edgecolor   => $color1,
+													edgestroke  => $outline_stroke,
+													svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+												 );
+
+										slice(
+													image => $IM,
+													start => $pos_start,
+													end   => $pos_start,
+													chr   => $data_point_prev->{chr},
+													radius_from => $radius0,
+													radius_to   => $data_point->{radius},
+													edgecolor   => $color2,
+													edgestroke  => $outline_stroke,
+													svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+												 );
+									} else {
+										slice(
+													image       => $IM,
+													start       => $pos_start,
+													end         => $pos_start,
+													chr         => $data_point_prev->{chr},
+													radius_from => $r_min,
+													radius_to   => $r_max,
+													edgecolor   => $join_color,
+													edgestroke  => $outline_stroke,
+													svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+												 );
+									}
+								} else {
+									slice(
+												image       => $IM,
+												start       => $pos_start,
+												end         => $pos_start,
+												chr         => $data_point_prev->{chr},
+												radius_from => $data_point_prev->{radius},
+												radius_to   => $data_point->{radius},
+												edgecolor   => $color2,
+												edgestroke  => $outline_stroke,
+												svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+											 );
+								}
+								slice(
+											image       => $IM,
+											start       => $pos_start,
+											end         => $pos_end,
+											chr         => $data_point_prev->{chr},
+											radius_from => $data_point->{radius},
+											radius_to   => $data_point->{radius},
+											edgecolor   => $color2,
+											edgestroke  => $outline_stroke,
+											svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+										 );
+							}
+
+							# for bins that are first/last on this ideogram, make
+							# sure that the drop line from the start/end of the bin
+							# is drawn
+							if ($first_in_series) {
+								slice(
+											image       => $IM,
+											start       => $data_point->{start},
+											end         => $data_point->{start},
+											chr         => $data_point->{chr},
+											radius_from => $data_point->{radius},
+											radius_to   => $radius0,   
+											edgecolor   => $color2,
+											edgestroke  => $outline_stroke,
+											svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+										 );
+							}
 							if ($last_in_series) {
 								slice(
 											image       => $IM,
@@ -2974,505 +3423,376 @@ sub run {
 											end         => $data_point->{end},
 											chr         => $data_point->{chr},
 											radius_from => $data_point->{radius},
-											radius_to   => $radius0,
+											radius_to   => $radius0,   
 											edgecolor   => $color2,
 											edgestroke  => $outline_stroke,
+											svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
 										 );
 							}
-							# draw drop start of current bin
-							slice(
-										image       => $IM,
-										start       => $data_point->{start},
-										end         => $data_point->{start},
-										chr         => $data_point->{chr},
-										radius_from => $data_point->{radius},
-										radius_to   => $radius0, #$orientation eq "in" ? $r1 : $r0,
-										edgecolor   => $color2,
-										edgestroke  => $outline_stroke,
-									 );
-							# draw roof of current bin
-							slice(
-										image       => $IM,
-										start       => $data_point->{start},
-										end         => $data_point->{end},
-										chr         => $data_point->{chr},
-										radius_from => $data_point->{radius},
-										radius_to   => $data_point->{radius},
-										edgecolor   => $color2,
-										edgestroke  => $outline_stroke,
-									 );
 						}
-					} else {
+						stop_timer("track_histogram");
+					}
+				}
 
-						# bins are joined
-						my ($pos_prev_end,$pos_start,$pos_end);
-						$pos_prev_end = $data_point_prev->{end};
-						if ($data_point_prev->{end} == $data_point->{start} - 1) {
-							$pos_start = $data_point->{start};
-						} else {
-							$pos_start = ( $data_point_prev->{end} + $data_point->{start} ) / 2;
-						}
-						$pos_end = $data_point->{end};
+				################################################################
+				# Tile
+				if ( $track_type eq "tile" ) {
 
-						# bins are joined
-						if ($fill_under) {
-							slice(image       => $IM,
-										start       => $pos_prev_end,
-										end         => $pos_start,
-										chr         => $data_point_prev->{chr},
-										radius_from => $radius0,
-										radius_to   => $data_point_prev->{radius},
-										fillcolor   => $fill_color,
-										edgecolor   => $color1,
-										edgestroke  => $bin_stroke,
-										mapoptions  => {url=>$url},
-									 ) if $pos_prev_end != $pos_start - 1;
-							slice(
-										image       => $IM,
-										start       => $pos_start,
-										end         => $pos_end,
-										chr         => $data_point->{chr},
-										radius_from => $radius0,
-										radius_to   => $data_point->{radius},
-										fillcolor   => $fill_color,
-										edgecolor   => $color2,
-										edgestroke  => $bin_stroke,
-										mapoptions  => {url=>$url},
-									 );
-						} elsif ($bin_stroke) {
-							slice(
-										image       => $IM,
-										start       => $pos_prev_end,
-										end         => $pos_start,
-										chr         => $data_point_prev->{chr},
-										radius_from => $radius0,
-										radius_to   => $data_point_prev->{radius},
-										edgecolor   => $color1,
-										edgestroke  => $bin_stroke,
-										mapoptions  => {url=>$url},
-									 ) if $pos_prev_end != $pos_start;
-							slice(
-										image       => $IM,
-										start       => $pos_start,
-										end         => $pos_end,
-										chr         => $data_point->{chr},
-										radius_from => $radius0,
-										radius_to   => $data_point->{radius},
-										edgecolor   => $color2,
-										edgestroke  => $bin_stroke,
-										mapoptions  => {url=>$url},
-									 );
-						}
-						if ($outline_stroke) {
-							slice(
-										image       => $IM,
-										start       => $pos_prev_end,
-										end         => $pos_start,
-										chr         => $data_point_prev->{chr},
-										radius_from => $data_point_prev->{radius},
-										radius_to   => $data_point_prev->{radius},
-										edgecolor   => $color1,
-										edgestroke  => $outline_stroke,
-									 ) if $pos_prev_end != $pos_start;
+					start_timer("track_tile");
+					my $set;
+					eval { $set = make_set($data_point->{start},$data_point->{end}) };
 
-							if ( ! match_string($color1,$color2) ) {
-								my ( $r_min, $r_max, $join_color ) =
-									abs( $data_point_prev->{radius} - $radius0 ) <
-										abs( $data_point->{radius} - $radius0 )
-											? (
-												 $data_point_prev->{radius},
-												 $data_point->{radius}, $color2
-												)
-												: (
-													 $data_point->{radius},
-													 $data_point_prev->{radius}, $color1
-													);
-			    
-								if ( ( $r_min < $radius0 && $r_max > $radius0 )
-										 || ( $r_max < $radius0
-													&& 
-													$r_min > $radius0 )
-									 ) {
-									slice(
-												image => $IM,
-												start => $pos_start,
-												end   => $pos_start,
-												chr   => $data_point_prev->{chr},
-												radius_from => $data_point_prev->{radius},
-												radius_to   => $radius0,
-												edgecolor   => $color1,
-												edgestroke  => $outline_stroke,
-											 );
+					if ($@) {
+						printinfo( "error - badtileset", $datum->{pos} );
+						next;
+					}
 
-									slice(
-												image => $IM,
-												start => $pos_start,
-												end   => $pos_start,
-												chr   => $data_point_prev->{chr},
-												radius_from => $radius0,
-												radius_to   => $data_point->{radius},
-												edgecolor   => $color2,
-												edgestroke  => $outline_stroke,
-											 );
-								} else {
-									slice(
-												image       => $IM,
-												start       => $pos_start,
-												end         => $pos_start,
-												chr         => $data_point_prev->{chr},
-												radius_from => $r_min,
-												radius_to   => $r_max,
-												edgecolor   => $join_color,
-												edgestroke  => $outline_stroke,
-											 );
+					my $color   = seek_parameter( "color", $datum->{data}[0], $datum);
+					my $pattern = seek_parameter( "pattern", $datum->{data}[0],$datum);
+					my $markup  = seek_parameter( "layers_overflow_color", @param_path );
+
+					for my $pair ([\$color,"color"],[\$pattern,"pattern"]) {
+						my ($var,$type) = @$pair;
+						if (! defined $$var) {
+							for my $item (@{$legend->{$type}}) {
+								if ( ! defined $item->{min} && ! defined $item->{max}) {
+									$$var = $item->{value};
+								} elsif ( ! defined $item->{min} && defined $item->{max} && $value < $item->{max} ) {
+									$$var = $item->{value};
+								} elsif (! defined $item->{max} && defined $item->{min} && $value >= $item->{min} ) {
+									$$var = $item->{value};
+								} elsif (defined $item->{min} &&
+												 defined $item->{max} &&
+												 $value >= $item->{min} && $value < $item->{max}) {
+									$$var = $item->{value};
 								}
-							} else {
-								slice(
-											image       => $IM,
-											start       => $pos_start,
-											end         => $pos_start,
-											chr         => $data_point_prev->{chr},
-											radius_from => $data_point_prev->{radius},
-											radius_to   => $data_point->{radius},
-											edgecolor   => $color2,
-											edgestroke  => $outline_stroke,
-										 );
+								last if defined $$var;
 							}
-							slice(
-										image       => $IM,
-										start       => $pos_start,
-										end         => $pos_end,
-										chr         => $data_point_prev->{chr},
-										radius_from => $data_point->{radius},
-										radius_to   => $data_point->{radius},
-										edgecolor   => $color2,
-										edgestroke  => $outline_stroke,
-									 );
-						}
-
-						# for bins that are first/last on this ideogram, make
-						# sure that the drop line from the start/end of the bin
-						# is drawn
-						if ($first_in_series) {
-							slice(
-										image       => $IM,
-										start       => $data_point->{start},
-										end         => $data_point->{start},
-										chr         => $data_point->{chr},
-										radius_from => $data_point->{radius},
-										radius_to   => $radius0,   
-										edgecolor   => $color2,
-										edgestroke  => $outline_stroke,
-									 );
-						}
-						if ($last_in_series) {
-							slice(
-										image       => $IM,
-										start       => $data_point->{end},
-										end         => $data_point->{end},
-										chr         => $data_point->{chr},
-										radius_from => $data_point->{radius},
-										radius_to   => $radius0,   
-										edgecolor   => $color2,
-										edgestroke  => $outline_stroke,
-									 );
 						}
 					}
-					stop_timer("track_histogram");
-				}
-			}
 
-			################################################################
-			# Tile
-			if ( $track_type eq "tile" ) {
+					my $padded_set = Set::IntSpan->new(sprintf( "%d-%d",$set->min-$margin,$set->max+$margin));
+					my ($freelayer) = grep( !$_->{set}->intersect($padded_set)->cardinality, @{ $tilelayers[$ideogram_idx] } );
 
-				start_timer("track_tile");
-				my $set;
-				eval { $set = make_set($data_point->{start},$data_point->{end}) };
-	    
-				if ($@) {
-					printinfo( "error - badtileset", $datum->{pos} );
-					next;
-				}
+				TILEPLACE:
 
-				my $padded_set = Set::IntSpan->new(sprintf( "%d-%d",$set->min-$margin,$set->max+$margin));
-
-				my ($freelayer) = grep( !$_->{set}->intersect($padded_set)->cardinality, @{ $tilelayers[$ideogram_idx] } );
-
-				my $color  = seek_parameter( "color", $datum->{data}[0], $datum, @param_path );
-				my $markup = seek_parameter( "layers_overflow_color", @param_path );
-
-			TILEPLACE:
-
-				if ( !$freelayer ) {
-					my $overflow = seek_parameter( "layers_overflow", @param_path ) || $EMPTY_STR;
-					if ( $overflow eq "hide" ) {
-						# not plotting this data point
-						goto SKIPDATUM;
-					} elsif ( $overflow eq "collapse" ) {
-						$freelayer = $tilelayers[$ideogram_idx][0];
-					} else {
-						push @{ $tilelayers[$ideogram_idx] },
-							{
-							 set => Set::IntSpan->new(),
-							 idx => int( @{ $tilelayers[$ideogram_idx] } )
-							};
-						$freelayer = $tilelayers[$ideogram_idx][-1];
-					}
-					$color = seek_parameter( "layers_overflow_color", $datum->{data}[0], $datum, @param_path ) if $markup;
-				}
-	    
-				if ( $freelayer->{idx} >= seek_parameter( "layers", @param_path ) && $markup ) {
-					$color = seek_parameter( "layers_overflow_color", $datum->{data}[0], $datum, @param_path );
-				}
-	    
-				$freelayer->{set} = $freelayer->{set}->union($padded_set);
-
-				my $radius;
-				my $t   = seek_parameter( "thickness", $datum->{data}[0], $datum, @param_path );
-				my $st  = seek_parameter( "stroke_thickness", $datum->{data}[0], $datum, @param_path );
-				my $p   = seek_parameter( "padding", $datum->{data}[0], $datum, @param_path );
-				my $off = seek_parameter( "offset", $datum->{data}[0], $datum, @param_path ) || 0;
-	    
-				$t  = unit_strip($t,"p");
-				$st = unit_strip($st,"p");
-				$p  = unit_strip($p,"p");
-	    
-				if ( $orientation eq "out" ) {
-					$radius = $r0 + $freelayer->{idx} * ( $t + $p ) + $off;
-				} elsif ( $orientation eq "in" ) {
-					$radius = $r1 - $freelayer->{idx} * ( $t + $p ) + $off;
-				} else {
-					my $nlayers = seek_parameter( "layers", @param_path );
-					my $midradius = ( $r1 + $r0 ) / 2;
-					#  orientation direction
-					#      in         -1
-					#      out         1
-					#      center      1
-					if ( not $nlayers % 2 ) {
-						# even number of layers
-						if ( !$freelayer->{idx} ) {
-							# first layer lies below mid-point
-							$radius = $midradius - $p / 2 - $t - $off;
-						} elsif ( $freelayer->{idx} % 2 ) {
-							# 1,3,5,... layer - above mid-point
-							my $m = int( $freelayer->{idx} / 2 );
-							$radius = $midradius + $p / 2 + $m * ( $t + $p ) + $off;
+					if ( !$freelayer ) {
+						my $overflow = seek_parameter( "layers_overflow", @param_path ) || $EMPTY_STR;
+						if ( $overflow eq "hide" ) {
+							# not plotting this data point
+							goto SKIPDATUM;
+						} elsif ( $overflow eq "collapse" ) {
+							$freelayer = $tilelayers[$ideogram_idx][0];
 						} else {
-							# 2,4,6,... layer - below mid-point
-							my $m   = int( $freelayer->{idx} / 2 );
-							$radius = $midradius - $p / 2 - $m * ( $t + $p ) - $t - $off;
+							push @{ $tilelayers[$ideogram_idx] },
+								{
+								 set => Set::IntSpan->new(),
+								 idx => int( @{ $tilelayers[$ideogram_idx] } )
+								};
+							$freelayer = $tilelayers[$ideogram_idx][-1];
 						}
+						$color = seek_parameter( "layers_overflow_color", $datum->{data}[0], $datum, @param_path ) if $markup;
+					}
+
+					if ( $freelayer->{idx} >= seek_parameter( "layers", @param_path ) && $markup ) {
+						$color = seek_parameter( "layers_overflow_color", $datum->{data}[0], $datum, @param_path );
+					}
+
+					$freelayer->{set} = $freelayer->{set}->union($padded_set);
+
+					my $radius;
+					my $t   = seek_parameter( "thickness", $datum->{data}[0], $datum, @param_path );
+					my $st  = seek_parameter( "stroke_thickness", $datum->{data}[0], $datum, @param_path );
+					my $p   = seek_parameter( "padding", $datum->{data}[0], $datum, @param_path );
+					my $off = seek_parameter( "offset", $datum->{data}[0], $datum, @param_path ) || 0;
+
+					$t  = unit_strip($t,"p");
+					$st = unit_strip($st,"p");
+					$p  = unit_strip($p,"p");
+
+					if ( $orientation eq "out" ) {
+						$radius = $r0 + $freelayer->{idx} * ( $t + $p ) + $off;
+					} elsif ( $orientation eq "in" ) {
+						$radius = $r1 - $freelayer->{idx} * ( $t + $p ) + $off;
 					} else {
-						# odd number of layers
-						if ( !$freelayer->{idx} ) {
-							$radius = $midradius - $t / 2 - $off;
-						} elsif ( $freelayer->{idx} % 2 ) {
-							# 1,3,5,... layer - above mid-point
-							my $m   = int( $freelayer->{idx} / 2 );
-							$radius = $midradius + $t / 2 + $m * ( $p + $t ) + $p + $off;
+						my $nlayers = seek_parameter( "layers", @param_path );
+						my $midradius = ( $r1 + $r0 ) / 2;
+						#  orientation direction
+						#      in         -1
+						#      out         1
+						#      center      1
+						if ( not $nlayers % 2 ) {
+							# even number of layers
+							if ( !$freelayer->{idx} ) {
+								# first layer lies below mid-point
+								$radius = $midradius - $p / 2 - $t - $off;
+							} elsif ( $freelayer->{idx} % 2 ) {
+								# 1,3,5,... layer - above mid-point
+								my $m = int( $freelayer->{idx} / 2 );
+								$radius = $midradius + $p / 2 + $m * ( $t + $p ) + $off;
+							} else {
+								# 2,4,6,... layer - below mid-point
+								my $m   = int( $freelayer->{idx} / 2 );
+								$radius = $midradius - $p / 2 - $m * ( $t + $p ) - $t - $off;
+							}
 						} else {
-							# 2,4,6,... layer - below mid-point
-							my $m   = int( $freelayer->{idx} / 2 );
-							$radius = $midradius - $t / 2 - $m * ( $p + $t ) - $off;
+							# odd number of layers
+							if ( !$freelayer->{idx} ) {
+								$radius = $midradius - $t / 2 - $off;
+							} elsif ( $freelayer->{idx} % 2 ) {
+								# 1,3,5,... layer - above mid-point
+								my $m   = int( $freelayer->{idx} / 2 );
+								$radius = $midradius + $t / 2 + $m * ( $p + $t ) + $p + $off;
+							} else {
+								# 2,4,6,... layer - below mid-point
+								my $m   = int( $freelayer->{idx} / 2 );
+								$radius = $midradius - $t / 2 - $m * ( $p + $t ) - $off;
+							}
+						}
+					}
+
+					if ($radius < $r0 || $radius > $r1) {
+						my $overflow = seek_parameter( "layers_overflow", @param_path ) || $EMPTY_STR;
+						if ( $overflow eq "collapse" ) {
+							$freelayer = $tilelayers[$ideogram_idx][0];
+						} else {
+							# not plotting this data point
+							goto SKIPDATUM;
+						} 
+						$color = $markup = seek_parameter( "layers_overflow_color", $datum, @param_path ) || "red";
+						if ($data_point->{seen}++) {
+							goto SKIPDATUM;
+						} else {
+							goto TILEPLACE;
+						}
+					}
+
+					printdebug_group("tile","tile",$value,"min",$plot_min,"max",$plot_max,"color",$color,"rgb",rgb_color($color),"pattern",$pattern);
+
+					my $url = seek_parameter("url",$data_point,$datum,@param_path);
+					$url = format_url(url=>$url,param_path=>[$data_point,$datum,@param_path]);
+					slice(
+								image       => $IM,
+								start       => $set->min,
+								end         => $set->max,
+								chr         => $data_point->{chr},
+								radius_from => $radius,
+								radius_to   => $radius + $orientation_direction * $t,
+								edgecolor   => seek_parameter("stroke_color", $datum->{data}[0],$datum,@param_path),
+								edgestroke  => $st,
+								mapoptions  => { url=>$url },
+								svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+								fillcolor   => $color,
+							 );
+					stop_timer("track_tile");
+				}
+
+				################################################################
+				# Heatmap
+				if ( $track_type eq "heatmap" ) {
+					start_timer("track_heatmap");
+					my $value   = $data_point->{value_orig};
+					my $color   = seek_parameter("color", $datum->{data}[0],$datum);
+					my $pattern = seek_parameter("pattern", $datum->{data}[0],$datum);
+					for my $pair ([\$color,"color"],[\$pattern,"pattern"]) {
+						my ($var,$type) = @$pair;
+						if (! defined $$var) {
+							for my $item (@{$legend->{$type}}) {
+								if ( ! defined $item->{min} && ! defined $item->{max}) {
+									$$var = $item->{value};
+								} elsif ( ! defined $item->{min} && defined $item->{max} && $value < $item->{max} ) {
+									$$var = $item->{value};
+								} elsif (! defined $item->{max} && defined $item->{min} && $value >= $item->{min} ) {
+									$$var = $item->{value};
+								} elsif (defined $item->{min} &&
+												 defined $item->{max} &&
+												 $value >= $item->{min} && $value < $item->{max}) {
+									$$var = $item->{value};
+								}
+								last if defined $$var;
+							}
+						}
+					}
+					printdebug_group("heatmap","heatmap",$value,"min",$plot_min,"max",$plot_max,"color",$color,"rgb",rgb_color($color),"pattern",$pattern);
+					my $url = seek_parameter("url",$data_point,$datum,@param_path);
+					$url = format_url(url=>$url,param_path=>[{color=>$color},$data_point,$datum,@param_path]);
+					if (my $min_size = seek_parameter("min_size", $datum->{data}[0],$datum,@param_path)) {
+						my $size = $data_point->{end} - $data_point->{start};
+						if ($size < $min_size) {
+							my $id = $IDEOGRAMS[$data_point->{ideogram_idx}];
+							$data_point->{start} -= int(($min_size-$size)/2);
+							$data_point->{end}   += int(($min_size-$size)/2);
+							$data_point->{start} = max($id->{set}->min,$data_point->{start});
+							$data_point->{end}   = min($id->{set}->max,$data_point->{end});
+						}
+					}
+					slice(
+								image       => $IM,
+								start       => $data_point->{start},
+								end         => $data_point->{end},
+								chr         => $data_point->{chr},
+								radius_from => $r0,
+								radius_to   => $r1,
+								edgecolor   => seek_parameter("stroke_color", $datum->{data}[0],$datum,@param_path) || $color,
+								edgestroke  => seek_parameter("stroke_thickness", $datum->{data}[0],$datum,@param_path),
+								svg         => { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum, @param_path) },
+								mapoptions  => { url  => $url},
+								fillcolor   => $color,
+								pattern     => $pattern,
+							 );
+					stop_timer("track_heatmap");
+				}
+			SKIPDATUM:
+				$datum_prev      = $datum;
+				$data_point_prev = $data_point;
+			}
+			printsvg(qq{</g>}) if $SVG_MAKE;
+			$plotid++;
+		}
+
+	OUT:
+
+		printdebug_group("output","generating output");
+		if ($MAP_MAKE) {
+			printdebug_group("output","compiling image map");
+			for my $map_element (reverse @MAP_ELEMENTS) {
+				printf MAP $map_element->{string},"\n";
+				if ($CONF{image}{image_map_overlay}) {
+					# create an overlay of the image map elements
+					my $poly = GD::Polygon->new();
+					my @coords = map {round($_)} @{$map_element->{coords}};
+					if (@coords == 3) {
+						if ($CONF{image}{image_map_overlay_fill_color}) {
+							$IM->filledArc(
+														 @coords,
+														 $coords[2],
+														 0, 360,
+														 aa_color($CONF{image}{image_map_overlay_fill_color},$IM,$COLORS)
+														);
+						}
+						my $color_obj;
+						if ($CONF{image}{image_map_overlay_stroke_thickness}) {
+							$IM->setThickness($CONF{image}{image_map_overlay_stroke_thickness});
+							$color_obj = fetch_color( $CONF{image}{image_map_overlay_stroke_color}, $COLORS);
+						} else {
+							$color_obj = aa_color($CONF{image}{image_map_overlay_stroke_color},$IM,$COLORS);
+						}
+						if ($CONF{image}{image_map_overlay_stroke_color}) {
+							$IM->arc(
+											 @coords,
+											 $coords[2],
+											 0, 360,
+											 $color_obj,
+											);
+						}
+						if ($CONF{image}{image_map_overlay_stroke_thickness}) {
+							$IM->setThickness(1);
+						}
+					} else {
+						while (my ($x,$y) = splice(@coords,0,2)) {
+							$poly->addPt($x,$y);
+						}
+						if ($CONF{image}{image_map_overlay_fill_color}) {
+							$IM->filledPolygon($poly,
+																 aa_color($CONF{image}{image_map_overlay_fill_color},$IM,$COLORS));
+						}
+						my $color_obj;
+						if ($CONF{image}{image_map_overlay_stroke_thickness}) {
+							$IM->setThickness($CONF{image}{image_map_overlay_stroke_thickness});
+							$color_obj = fetch_color( $CONF{image}{image_map_overlay_stroke_color}, $COLORS );
+						} else {
+							$color_obj = aa_color($CONF{image}{image_map_overlay_stroke_color},$IM,$COLORS);
+						}
+						if ($CONF{image}{image_map_overlay_stroke_color}) {
+							print $IM->polygon($poly,$color_obj);
+						}
+						if ($CONF{image}{image_map_overlay_stroke_thickness}) {
+							$IM->setThickness(1);
 						}
 					}
 				}
-
-				if ($radius < $r0 || $radius > $r1) {
-					my $overflow = seek_parameter( "layers_overflow", @param_path ) || $EMPTY_STR;
-					if ( $overflow eq "collapse" ) {
-						$freelayer = $tilelayers[$ideogram_idx][0];
-					} else {
-						# not plotting this data point
-						goto SKIPDATUM;
-					} 
-					$color = $markup = seek_parameter( "layers_overflow_color", $datum, @param_path ) || "red";
-					if ($data_point->{seen}++) {
-						goto SKIPDATUM;
-					} else {
-						goto TILEPLACE;
-					}
-				}
-
-				my $url = seek_parameter("url",$data_point,$datum,@param_path);
-				$url = format_url(url=>$url,param_path=>[$data_point,$datum,@param_path]);
-				slice(
-							image       => $IM,
-							start       => $set->min,
-							end         => $set->max,
-							chr         => $data_point->{chr},
-							radius_from => $radius,
-							radius_to   => $radius + $orientation_direction * $t,
-							edgecolor   => seek_parameter("stroke_color", $datum->{data}[0],$datum,@param_path),
-							edgestroke  => $st,
-							mapoptions  => { url=>$url },
-							fillcolor   => $color,
-						 );
-				stop_timer("track_tile");
 			}
-
-			################################################################
-			# Heatmap
-			if ( $track_type eq "heatmap" ) {
-				start_timer("track_heatmap");
-				my @colors = color_to_list( seek_parameter("color", $datum->{data}[0],$datum, @param_path) ) ;
-				my $value  = $data_point->{value};
-				my $color_index;
-				if ( $value > $plot_max ) {
-					$color_index = @colors - 1;
-				} elsif ( $value < $plot_min ) {
-					$color_index = 0;
-				} elsif ( seek_parameter( "scale_log_base", @param_path ) ) {
-					my $base = seek_parameter( "scale_log_base", @param_path );
-					#printinfo($base);
-					die "The scale_log_base parameter for a heat map cannot be zero or negative. Please change it to a non-zero positive value or remove it." unless $base>0;
-					my $f    = ( $value - $plot_min ) / ( $plot_max - $plot_min );
-					my $flog = $f**( 1 / $base );
-					$color_index = min(@colors-1,int ( @colors  * $flog ));
-				} else {
-					my $d        = $plot_max - $plot_min;
-					$color_index = $d ? @colors * ($value-$plot_min) /$d : 0;
-					$color_index = min(@colors-1,int $color_index);
-				}
-				my $color = $colors[$color_index];
-				printdebug_group("heatmap","heatmap",$value,"min",$plot_min,"max",$plot_max,"ncolors",int(@colors),"cidx",$color_index,"color",$color,"rgb",rgb_color( $color ),"colormap",@colors);
-				my $url = seek_parameter("url",$data_point,$datum,@param_path);
-				$url = format_url(url=>$url,param_path=>[{color=>$color},$data_point,$datum,@param_path]);
-				if (my $min_size = seek_parameter("min_size", $datum->{data}[0],$datum,@param_path)) {
-					my $size = $data_point->{end} - $data_point->{start};
-					if ($size < $min_size) {
-						my $id = $IDEOGRAMS[$data_point->{ideogram_idx}];
-						$data_point->{start} -= int(($min_size-$size)/2);
-						$data_point->{end}   += int(($min_size-$size)/2);
-						$data_point->{start} = max($id->{set}->min,$data_point->{start});
-						$data_point->{end}   = min($id->{set}->max,$data_point->{end});
-					}
-				}
-				slice(
-							image       => $IM,
-							start       => $data_point->{start},
-							end         => $data_point->{end},
-							chr         => $data_point->{chr},
-							radius_from => $r0,
-							radius_to   => $r1,
-							edgecolor   => seek_parameter("stroke_color", $datum->{data}[0],$datum,@param_path) || $color,
-							edgestroke  => seek_parameter("stroke_thickness", $datum->{data}[0],$datum,@param_path),
-							mapoptions  => {url=>$url},
-							fillcolor   => $color,
-						 );
-				stop_timer("track_heatmap");
-			}
-		SKIPDATUM:
-			$datum_prev      = $datum;
-			$data_point_prev = $data_point;
+			printf MAP "</map>\n";
+			close(MAP);
+			my $fsize = round ((-s $outputfile_map) / 1000);
+			printdebug_group("output","created HTML image map at $outputfile_map ($fsize kb)");
 		}
-		printsvg(qq{</g>}) if $SVG_MAKE;
-		$plotid++;
-	}
 
- OUT:
+		if ($PNG_MAKE) {
+			open PNG, ">$outputfile_png" || fatal_error("io","cannot_write",$outputfile_png,"PNG file",$!);
+			binmode PNG;
+			print PNG $IM->png;
+			close(PNG);
+			my $fsize = round ((-s $outputfile_png) / 1000);
+			printdebug_group("output","created PNG image $outputfile_png ($fsize kb)");
+		}
 
-	printdebug_group("summary,output","generating output");
-	if ($MAP_MAKE) {
-		printdebug_group("summary,output","compiling image map");
-		for my $map_element (reverse @MAP_ELEMENTS) {
-			printf MAP $map_element->{string},"\n";
-			if ($CONF{image}{image_map_overlay}) {
-				# create an overlay of the image map elements
-				my $poly = GD::Polygon->new();
-				my @coords = map {round($_)} @{$map_element->{coords}};
-				if (@coords == 3) {
-					if ($CONF{image}{image_map_overlay_fill_color}) {
-						$IM->filledArc(
-													 @coords,
-													 $coords[2],
-													 0, 360,
-													 aa_color($CONF{image}{image_map_overlay_fill_color},$IM,$COLORS)
-													);
-					}
-					my $color_obj;
-					if ($CONF{image}{image_map_overlay_stroke_thickness}) {
-						$IM->setThickness($CONF{image}{image_map_overlay_stroke_thickness});
-						$color_obj = fetch_color( $CONF{image}{image_map_overlay_stroke_color}, $COLORS);
-					} else {
-						$color_obj = aa_color($CONF{image}{image_map_overlay_stroke_color},$IM,$COLORS);
-					}
-					if ($CONF{image}{image_map_overlay_stroke_color}) {
-						$IM->arc(
-										 @coords,
-										 $coords[2],
-										 0, 360,
-										 $color_obj,
-										);
-					}
-					if ($CONF{image}{image_map_overlay_stroke_thickness}) {
-						$IM->setThickness(1);
-					}
-				} else {
-					while (my ($x,$y) = splice(@coords,0,2)) {
-						$poly->addPt($x,$y);
-					}
-					if ($CONF{image}{image_map_overlay_fill_color}) {
-						$IM->filledPolygon($poly,
-															 aa_color($CONF{image}{image_map_overlay_fill_color},$IM,$COLORS));
-					}
-					my $color_obj;
-					if ($CONF{image}{image_map_overlay_stroke_thickness}) {
-						$IM->setThickness($CONF{image}{image_map_overlay_stroke_thickness});
-						$color_obj = fetch_color( $CONF{image}{image_map_overlay_stroke_color}, $COLORS );
-					} else {
-						$color_obj = aa_color($CONF{image}{image_map_overlay_stroke_color},$IM,$COLORS);
-					}
-					if ($CONF{image}{image_map_overlay_stroke_color}) {
-						print $IM->polygon($poly,$color_obj);
-					}
-					if ($CONF{image}{image_map_overlay_stroke_thickness}) {
-						$IM->setThickness(1);
-					}
+		if ($SVG_MAKE) {
+			my $patterns = fetch_conf("patterns","svg");
+			printsvg("<defs>");
+			for my $pattern_name (keys %$patterns) {
+				printsvg($patterns->{$pattern_name});
+			}
+			printsvg("</defs>");
+			printsvg(q{</svg>});
+			close(SVG);
+			my $fsize = -e $outputfile_svg ? round ((-s $outputfile_svg) / 1000) : 0;
+			printdebug_group("output","created SVG image $outputfile_svg ($fsize kb)");
+		}
+
+		stop_timer("circos");
+		report_timer();
+
+		if (my $t = fetch_conf("debug_auto_timer_report")) {
+			if (get_timer("circos") > $t) {
+				# force timer reporting
+				if (! debug_or_group("timer")) {
+					debug_group_add("timer");
+					report_timer();
+					printdebug_group("summary,timer","image took more than $t s to generate. Component timings are shown above. To always show them, use -debug_group timer. To adjust the time cutoff, change debug_auto_timer_report in etc/housekeeping.conf.");
 				}
 			}
 		}
-		printf MAP "</map>\n";
-		close(MAP);
-		my $fsize = round ((-s $outputfile_map) / 1000);
-		printdebug_group(["summary","output"],"created HTML image map at $outputfile_map ($fsize kb)");
-	}
-
-	if ($PNG_MAKE) {
-		open PNG, ">$outputfile_png" || fatal_error("io","cannot_write",$outputfile_png,"PNG file",$!);
-		binmode PNG;
-		print PNG $IM->png;
-		close(PNG);
-		my $fsize = round ((-s $outputfile_png) / 1000);
-		printdebug_group(["summary","output"],"created PNG image $outputfile_png ($fsize kb)");
-	}
-
-	if ($SVG_MAKE) {
-    printsvg(q{</svg>});
-		close(SVG);
-		my $fsize = -e $outputfile_svg ? round ((-s $outputfile_svg) / 1000) : 0;
-		printdebug_group(["summary","output"],"created SVG image $outputfile_svg ($fsize kb)");
-	}
-
-	stop_timer("circos");
-	report_timer();
-
-	if (my $t = fetch_conf("debug_auto_timer_report")) {
-		if(get_timer("circos") > $t) {
-			# force timer reporting
-			if (! debug_or_group("timer")) {
-				debug_group_add("timer");
-				report_timer();
-				printdebug_group("summary,timer","image took more than $t s to generate. Component timings are shown above. To always show them, use -debug_group timer. To adjust the time cutoff, change debug_auto_timer_report in etc/housekeeping.conf.");
-			}
-		}
-	}
 	
-	return 1;
-}
+		return 1;
+	}
 
-# END END END
+# end run()
+################################################################
+
+sub check_data_range {
+	my ($set,$type,$chr) = @_;
+	return undef if !$KARYOTYPE->{$chr}{chr}{display};
+	# $int = intersection of ideogram display region with data set
+	my $int = $KARYOTYPE->{$chr}{chr}{display_region}{accept}->intersect($set);
+	if ($int == $set->cardinality) {
+		# data completely within ideogram
+		return $set;
+	} else {
+		my $do_trim = fetch_conf("data_out_of_range") =~ /trim|clip/;
+		my $overlap = $int->cardinality;
+		if (fetch_conf("data_out_of_range") =~ /warn/) {
+			error("warning","data_range_exceeded",
+						$type,$set->run_list,
+						$chr,$KARYOTYPE->{ $chr }{chr}{display_region}{accept}->run_list,
+						$do_trim && $overlap ? "trimmed" : "hidden");
+		} elsif (fetch_conf("data_out_of_range") =~ /fatal/) {
+			fatal_error("data","data_range_exceeded",
+									$type,$set->run_list,
+									$chr,$KARYOTYPE->{ $chr }{chr}{display_region}{accept}->run_list);
+		}
+		if ($do_trim) {
+			# trim the link, only if it has a non-zero intersection with the ideogram
+			if ($int->cardinality) {
+				return $int;
+			} else {
+				return undef;
+			}
+		} else {
+			return undef;
+		}
+	}
+}
 
 # -------------------------------------------------------------------
 sub fetch_brush {
@@ -3502,11 +3822,11 @@ sub fetch_brush {
     };
     
     if ($@) {
-			croak "error - could not create 24-bit brush in fetch_brush"
+			confess "error - could not create 24-bit brush in fetch_brush"
     }
     
     if ( !$brush ) {
-      croak "error - could not create brush of size ($w) x ($h)";
+      confess "error - could not create brush of size ($w) x ($h)";
     }
 
     $brush_colors = allocate_colors($brush);
@@ -3548,15 +3868,15 @@ sub angle_to_span {
 
 # -------------------------------------------------------------------
 sub rotate_xy {
-    my ($x,$y,$x0,$y0,$angle) = @_;
-    $angle = ( $angle - $CONF{image}{angle_offset} ) * $DEG2RAD;
-    my $sa = sin($angle);
-    my $ca = cos($angle);
-    my $xd = $x-$x0;
-    my $yd = $y-$y0;
-    my $xr = $xd*$ca - $yd*$sa; # ( $x - $x0 ) * cos($angle) - ( $y - $y0 ) * sin($angle);
-    my $yr = $xd*$sa + $yd*$ca; # ( $x - $x0 ) * sin($angle) + ( $y - $y0 ) * cos($angle);
-    return ( round( $xr + $x0 ), round( $yr + $y0 ) );
+	my ($x,$y,$x0,$y0,$angle) = @_;
+	$angle = ( $angle - $CONF{image}{angle_offset} ) * $DEG2RAD;
+	my $sa = sin($angle);
+	my $ca = cos($angle);
+	my $xd = $x-$x0;
+	my $yd = $y-$y0;
+	my $xr = $xd*$ca - $yd*$sa; # ( $x - $x0 ) * cos($angle) - ( $y - $y0 ) * sin($angle);
+	my $yr = $xd*$sa + $yd*$ca; # ( $x - $x0 ) * sin($angle) + ( $y - $y0 ) * cos($angle);
+	return ( round( $xr + $x0 ), round( $yr + $y0 ) );
 }
 
 # -------------------------------------------------------------------
@@ -3628,32 +3948,32 @@ sub make_chrorder_groups {
   for my $tag (@$chrorder) {
     if ( $tag eq $CARAT ) {
       # this list has a start anchor
-	fatal_error("ideogram","multiple_start_anchors") if grep( $_->{start}, @$chrorder_groups );
-	$chrorder_groups->[-1]{start} = 1;
+			fatal_error("ideogram","multiple_start_anchors") if grep( $_->{start}, @$chrorder_groups );
+			$chrorder_groups->[-1]{start} = 1;
     } elsif ( $tag eq q{$} ) {
       # this list has an end anchor
 			fatal_error("ideogram","multiple_end_anchors") if grep( $_->{end}, @$chrorder_groups );
 			$chrorder_groups->[-1]{end} = 1;
     } elsif ( $tag eq $PIPE ) {
-	# saw a break - create a new group
-	push @{$chrorder_groups},
-	{
-	    idx      => scalar( @{$chrorder_groups} ),
-	    cumulidx => $chrorder_groups->[-1]{n} + $chrorder_groups->[-1]{cumulidx}
-	};
+			# saw a break - create a new group
+			push @{$chrorder_groups},
+				{
+				 idx      => scalar( @{$chrorder_groups} ),
+				 cumulidx => $chrorder_groups->[-1]{n} + $chrorder_groups->[-1]{cumulidx}
+				};
     } elsif ( $tag eq $DASH ) {
-	push @{ $chrorder_groups->[-1]{tags} }, { tag => $tag };
-	$chrorder_groups->[-1]{n} = int( @{ $chrorder_groups->[-1]{tags} } );
-	$chrorder_groups->[-1]{tags}[-1]{group_idx} = $chrorder_groups->[-1]{n} - 1;
+			push @{ $chrorder_groups->[-1]{tags} }, { tag => $tag };
+			$chrorder_groups->[-1]{n} = int( @{ $chrorder_groups->[-1]{tags} } );
+			$chrorder_groups->[-1]{tags}[-1]{group_idx} = $chrorder_groups->[-1]{n} - 1;
     } else {
-	# add this tag and all ideograms that match it (v0.52) to the most recent group 
-	#my @tagged_ideograms = grep( ($_->{tag} !~ /__/ && $_->{tag} eq $tag) || ($_->{tag} =~ /__/ && $_->{chr} eq $tag) , @IDEOGRAMS );
-	my @tagged_ideograms = grep( $_->{chr} eq $tag || $_->{tag} eq $tag , @IDEOGRAMS );
-	for my $tagged_ideogram (@tagged_ideograms) {
-	    push @{ $chrorder_groups->[-1]{tags} }, { tag => $tag, ideogram_idx => $tagged_ideogram->{idx} };
-	    $chrorder_groups->[-1]{n} = int( @{ $chrorder_groups->[-1]{tags} } );
-	    $chrorder_groups->[-1]{tags}[-1]{group_idx} = $chrorder_groups->[-1]{n} - 1;
-	}
+			# add this tag and all ideograms that match it (v0.52) to the most recent group 
+			#my @tagged_ideograms = grep( ($_->{tag} !~ /__/ && $_->{tag} eq $tag) || ($_->{tag} =~ /__/ && $_->{chr} eq $tag) , @IDEOGRAMS );
+			my @tagged_ideograms = grep( $_->{chr} eq $tag || $_->{tag} eq $tag , @IDEOGRAMS );
+			for my $tagged_ideogram (@tagged_ideograms) {
+				push @{ $chrorder_groups->[-1]{tags} }, { tag => $tag, ideogram_idx => $tagged_ideogram->{idx} };
+				$chrorder_groups->[-1]{n} = int( @{ $chrorder_groups->[-1]{tags} } );
+				$chrorder_groups->[-1]{tags}[-1]{group_idx} = $chrorder_groups->[-1]{n} - 1;
+			}
     }
   }
   #
@@ -3683,28 +4003,28 @@ sub filter_data {
 # set the display index of each ideogram.
 #
 sub set_display_index {
-    my $chrorder_groups  = shift;
-    my $seen_display_idx = Set::IntSpan->new();
-    #
-    # keep track of which display_idx values have been used
-    # process groups that have start or end flags first
-    #
-    for my $group (sort { ( $b->{start} || $b->{end} || 0 ) <=> ( $a->{start} || $a->{end} || 0 ) } @$chrorder_groups ) {
-	if ( $group->{start} ) {
+	my $chrorder_groups  = shift;
+	my $seen_display_idx = Set::IntSpan->new();
+	#
+	# keep track of which display_idx values have been used
+	# process groups that have start or end flags first
+	#
+	for my $group (sort { ( $b->{start} || $b->{end} || 0 ) <=> ( $a->{start} || $a->{end} || 0 ) } @$chrorder_groups ) {
+		if ( $group->{start} ) {
 	    my $display_idx = 0;
 	    for my $tag_item ( @{ $group->{tags} } ) {
-		$tag_item->{display_idx} = $display_idx;
-		$seen_display_idx->insert($display_idx);
-		$display_idx++;
+				$tag_item->{display_idx} = $display_idx;
+				$seen_display_idx->insert($display_idx);
+				$display_idx++;
 	    }
-	} elsif ( $group->{end} ) {
+		} elsif ( $group->{end} ) {
 	    my $display_idx = @IDEOGRAMS - $group->{n};
 	    for my $tag_item ( @{ $group->{tags} } ) {
-		$tag_item->{display_idx} = $display_idx;
-		$seen_display_idx->insert($display_idx);
-		$display_idx++;
+				$tag_item->{display_idx} = $display_idx;
+				$seen_display_idx->insert($display_idx);
+				$display_idx++;
 	    }
-	} else {
+		} else {
 	    my $idx;
 	    my $minidx;
 	    
@@ -3714,36 +4034,36 @@ sub set_display_index {
 	    # set relative to the anchor
 	    #
 	    my ($ideogram_anchor) = grep( defined $_->{ideogram_idx},
-					  sort { $a->{group_idx} <=> $b->{group_idx} }
-					  @{ $group->{tags} } );
+																		sort { $a->{group_idx} <=> $b->{group_idx} }
+																		@{ $group->{tags} } );
 	    
 	    my $continue;
 	    for my $tag_item ( sort { $a->{group_idx} <=> $b->{group_idx} } @{ $group->{tags} } ) {
-		$tag_item->{display_idx} = $tag_item->{group_idx} -
-		    $ideogram_anchor->{group_idx} +
-		    $ideogram_anchor->{ideogram_idx};
-		$seen_display_idx->insert( $tag_item->{display_idx} );
+				$tag_item->{display_idx} = $tag_item->{group_idx} -
+					$ideogram_anchor->{group_idx} +
+						$ideogram_anchor->{ideogram_idx};
+				$seen_display_idx->insert( $tag_item->{display_idx} );
 	    }
 	    
 	    #
 	    # find the minimum display index for this group
 	    #
 	    my $min_display_index =
-		min( map { $_->{display_idx} } @{ $group->{tags} } );
+				min( map { $_->{display_idx} } @{ $group->{tags} } );
 	    
 	    if ( $min_display_index < 0 ) {
-		map { $_->{display_idx} -= $min_display_index }	@{ $group->{tags} };
+				map { $_->{display_idx} -= $min_display_index }	@{ $group->{tags} };
 	    }
+		}
 	}
-    }
-    return $chrorder_groups;
+	return $chrorder_groups;
 }
 
 ################################################################
 # Create a new span object from start/end positions. 
 # Positions are expected to be integers. Floats are truncated.
 #
-# If start>end the routine croaks.
+# If start>end the routine aborts with a stack trace via confess
 # If start=end or end is not defined, the span is a single value.
 
 # -------------------------------------------------------------------
@@ -3787,9 +4107,7 @@ sub recompute_chrorder_groups {
 				} else {
 					$display_idx = $tag_item->{display_idx};
 				}
-				get_ideogram_by_idx( $tag_item->{ideogram_idx} )
-					->{display_idx} = $display_idx
-						if defined $display_idx;
+				get_ideogram_by_idx( $tag_item->{ideogram_idx} )->{display_idx} = $display_idx if defined $display_idx;
       } else {
 				printwarning("trimming ideogram order - removing entry",$tag_item->{group_idx},"from group", $group->{idx});
 				$tag_item->{display_idx} = undef;
@@ -3929,110 +4247,122 @@ sub reform_chrorder_groups {
 }
 
 # -------------------------------------------------------------------
-sub parse_parameters {
+{
+	my $key_ok_table = {};
+	sub parse_parameters {
 
-  # Given a configuration file node (e.g. highlights), parse
-  # parameter values, filtering for only those parameters that
-  # are accepted for this node type
-  #
-  # parse_parameters( $CONF{highlights}, "highlights" );
-  #
-  # Parameters keyed by "default" in the list will be added to the
-  # list of acceptable parameters for any type.
-  #
-  # If the $continue flag is set, then fatal errors are not triggered if
-  # unsupported parameters are seen.
-  #
-  # parse_parameters( $CONF{highlights}, "highlights" , 1);
-  #
-  # Additional acceptable parameters can be added as a list.
-  #
-  # parse_parameters( $CONF{highlights}, "highlights" , 1, "param1", "param2");
+		# Given a configuration file node (e.g. highlights), parse
+		# parameter values, filtering for only those parameters that
+		# are accepted for this node type
+		#
+		# parse_parameters( $CONF{highlights}, "highlights" );
+		#
+		# Parameters keyed by "default" in the list will be added to the
+		# list of acceptable parameters for any type.
+		#
+		# If the $continue flag is set, then fatal errors are not triggered if
+		# unsupported parameters are seen.
+		#
+		# parse_parameters( $CONF{highlights}, "highlights" , 1);
+		#
+		# Additional acceptable parameters can be added as a list.
+		#
+		# parse_parameters( $CONF{highlights}, "highlights" , 1, "param1", "param2");
   
-  my $node       = shift;
-  my $type       = shift;
-  my $continue   = shift;
-  my @params     = @_;
-  my %param_list = (
-      default => [qw(
-											init_counter
-											pre_set_counter
-											post_set_counter
-											pre_increment_counter
-											post_increment_counter
-											increment_counter file
-											url
-											id
-											guides
-											record_limit perturb z show hide axes backgrounds background_color 
-											background_stroke_color background_stroke_thickness 
-											label_size label_offset label_font
-									 )],
-										highlight => [qw(
-																			offset r0 r1 layer_with_data fill_color stroke_color
-																			stroke_thickness ideogram minsize padding type
+		my $node       = shift;
+		my $type       = shift;
+		my $continue   = shift;
+		my @params     = @_;
+		my %param_list = (
+											default => [qw(
+																			init_counter
+																			pre_set_counter
+																			post_set_counter
+																			pre_increment_counter
+																			post_increment_counter
+																			increment_counter file
+																			url
+																			id
+																			guides
+																			record_limit perturb z show hide axes backgrounds background_color 
+																			background_stroke_color background_stroke_thickness 
+																			label_size label_offset label_font
 																	 )],
-										link => [qw(
-																 offset start end color pattern flat rev reversed inv inverted twist 
-																 thickness stroke_thickness stroke_color ribbon radius radius1 
-																 radius2 bezier_radius crest bezier_radius_purity ribbon 
-																 perturb_crest perturb_bezier_radius perturb_bezier_radius_purity
-																 rules use show hide minsize padding type
-															)],
-										connector => [qw(
-																			connector_dims thickness color r0 r1 inv rev
-																	 )],
-										plot      => [qw( start end file minsize
-																			angle_shift layers_overflow connector_dims extend_bin
-                                      label_parallel rotation
-																			label_rotate label_radial label_tangential value scale_log_base layers_overflow_color
-																			offset padding rpadding thickness layers margin max_gap
-																			fill_color color thickness stroke_color stroke_thickness
-																			orientation thickness r0 r1 glyph glyph_size min max
-																			stroke_color stroke_thickness fill_under break_line_distance stroke_type
-																			type resolution padding resolve_order label_snuggle
-																			snuggle_tolerance snuggle_link_overlap_test snuggle_sampling
-																			snuggle_refine snuggle_link_overlap_tolerance
-																			max_snuggle_distance resolve_tolerance sort_bin_values
-																			overflow overflow_color overflow_font overflow_size
-																			link_thickness link_orientation link_color show_links link_dims skip_run
-																			min_value_change yoffset
-																			rules range
-																			)],
-									 );
+											highlight => [qw(
+																				offset r0 r1 layer_with_data fill_color stroke_color
+																				stroke_thickness ideogram minsize padding type
+																		 )],
+											link => [qw(
+																	 offset start end color pattern flat rev reversed inv inverted twist 
+																	 thickness stroke_thickness stroke_color ribbon radius radius1 
+																	 radius2 bezier_radius crest bezier_radius_purity ribbon 
+																	 perturb_crest perturb_bezier_radius perturb_bezier_radius_purity
+																	 rules use show hide minsize padding type
+																)],
+											connector => [qw(
+																				connector_dims thickness color r0 r1 inv rev
+																		 )],
+											plot      => [qw( start end file minsize
+																				angle_shift layers_overflow connector_dims extend_bin
+																				label_parallel rotation
+																				label_rotate label_radial label_tangential value scale_log_base layers_overflow_color
+																				offset padding rpadding thickness layers margin max_gap float
+																				fill_color pattern pattern_mapping color color_mapping color_mapping_boundaries pattern_mapping_boundaries thickness stroke_color stroke_thickness
+																				orientation thickness r0 r1 glyph glyph_size min max
+																				stroke_color stroke_thickness fill_under break_line_distance stroke_type
+																				type resolution padding resolve_order label_snuggle
+																				snuggle_tolerance snuggle_link_overlap_test snuggle_sampling
+																				snuggle_refine snuggle_link_overlap_tolerance
+																				max_snuggle_distance resolve_tolerance sort_bin_values
+																				overflow overflow_color overflow_font overflow_size
+																				link_thickness link_orientation link_color show_links link_dims skip_run
+																				min_value_change yoffset
+																				rules range
+																		 )],
+										 );
 
-  $param_list{scatter}      = $param_list{plot};
-  $param_list{line}         = $param_list{plot};
-  $param_list{histogram}    = $param_list{plot};
-  $param_list{tile}         = $param_list{plot};
-  $param_list{heatmap}      = $param_list{plot};
-	$param_list{link_twoline} = $param_list{link};
-  $param_list{text}         = $param_list{plot};
+		$param_list{scatter}      = $param_list{plot};
+		$param_list{line}         = $param_list{plot};
+		$param_list{histogram}    = $param_list{plot};
+		$param_list{tile}         = $param_list{plot};
+		$param_list{heatmap}      = $param_list{plot};
+		$param_list{link_twoline} = $param_list{link};
+		$param_list{text}         = $param_list{plot};
 
-  fatal_error("configuration","bad_parameter_type",$type) unless $param_list{$type};
+		fatal_error("configuration","bad_parameter_type",$type) unless $param_list{$type};
 
-  my $params = {};
-	my $restrictive = not_defined_or_one(fetch_conf("restrict_parameter_names"));
-	my @params_ok   = ( @{ $param_list{$type} }, @{ $param_list{default} }, @params );
-  for my $key ( keys %$node ) {
-    my ( $key_root,$key_number ) = $key =~ /(.+?)(\d*)$/;
-		my $key_ok = $key =~ /^__.+/ || grep( $key_root eq $_ || $key eq $_ || $key_root =~ /$_[*]+/ , @params_ok );
-		next if ref $node->{$key} && ! $key_ok;
-    if ( $key_ok ||  ! $restrictive ) {
-			if ( ! defined $params->{$key} ) {
-				my $value = $node->{$key};
-				#$value =~ s/;\S/,/g;
-				$value = 1 if lc $value eq "yes";
-				$value = 0 if lc $value eq "no";
-				$params->{$key} = $value;
+		my $params = {};
+		my $restrictive = not_defined_or_one(fetch_conf("restrict_parameter_names"));
+		my @params_ok   = ( @{ $param_list{$type} }, @{ $param_list{default} }, @params );
+		for my $key ( keys %$node ) {
+			my ($key_root,$key_number) = $key =~ /(.+?)(\d*)$/;
+			my $key_ok;
+			if (exists $key_ok_table->{$type}{$key}) {
+				$key_ok = $key_ok_table->{$type}{$key};
 			} else {
-				fatal_error("configuration","defined_twice",$key,$type);
+				$key_ok = !$restrictive || 
+					grep( $key_root eq $_ || $key eq $_ || $key_root =~ /$_[*]+/ , @params_ok );
+				$key_ok_table->{$type}{$key} = 1;
 			}
-		} elsif ($restrictive && ! $continue) {
-			fatal_error("configuration","unsupported_parameter",$key,$type);
-    }
-  }
-  return $params;
+			next if ref $node->{$key} && ! $key_ok;
+			if ( $key_ok ) {
+				if ( ! defined $params->{$key} ) {
+					my $value = $node->{$key};
+					#$value =~ s/;\S/,/g;
+					if (defined $value) {
+						$value = 1 if lc $value eq "yes";
+						$value = 0 if lc $value eq "no";
+						$params->{$key} = $value;
+					}
+				} else {
+					fatal_error("configuration","defined_twice",$key,$type);
+				}
+			} elsif ($restrictive && ! $continue) {
+				fatal_error("configuration","unsupported_parameter",$key,$type);
+			}
+		}
+		return $params;
+	}
 }
 
 # -------------------------------------------------------------------
@@ -4104,19 +4434,18 @@ sub register_z_levels {
 
 # -------------------------------------------------------------------
 sub draw_axis_break {
-
 	my $ideogram      = shift;
 	my $ideogram_next = $ideogram->{next};
 	return unless fetch_conf("ideogram","spacing","axis_break");
 	my $style_id   = $CONF{ideogram}{spacing}{axis_break_style};
 	my $style_data = $CONF{ideogram}{spacing}{break_style}{$style_id};
-	if(! $style_data) {
+	if (! $style_data) {
 		fatal_error("ideogram","undefined_axis_break_style",$style_id,$style_id);
 	}
 	my $radius_change =
 		$DIMS->{ideogram}{ $ideogram->{tag} }{radius} !=
 			$DIMS->{ideogram}{ $ideogram_next->{tag} }{radius};
-	
+
 	my $thickness = unit_convert(
 															 from => unit_validate(
 																										 seek_parameter( "thickness", $style_data ),
@@ -4126,136 +4455,157 @@ sub draw_axis_break {
 															 to      => "p",
 															 factors => { rp => $ideogram->{thickness} }
 															);
-	
-    #printstructure("ideogram",$ideogram);
-    #printstructure("ideogram",$ideogram_next);
-    
-    if ( $style_id == 1 ) {
-	# slice connecting the IDEOGRAMS
-	if ( $ideogram->{break}{start} && $ideogram->{prev}{chr} ne $ideogram->{chr}) {
+
+	my $break_space = $CONF{ideogram}{spacing}{break};
+
+
+	#printstructure("ideogram",$ideogram);
+	#printstructure("ideogram",$ideogram_next);
+
+	if ( $style_id == 1 ) {
+		# slice connecting the IDEOGRAMS
+		if ( $ideogram->{break}{start} && $ideogram->{prev}{chr} ne $ideogram->{chr}) {
 	    my $start = $ideogram->{reverse} ? $ideogram->{set}->max : $ideogram->{set}->min;
-	    draw_break({chr      => $ideogram->{chr},
-			ideogram => $ideogram,
-			start_offset => ideogram_spacing_helper( $ideogram->{break}{start} ),
-			start      => $start,
-			end        => $start,
-			fillcolor  => $style_data->{fill_color},
-			thickness  => $thickness,
-			style_data => $style_data
-		       });
-	}
-	if ($ideogram->{break}{end} && $ideogram->{next}{chr} ne $ideogram->{chr}) {
+	    draw_break({chr          => $ideogram->{chr},
+									ideogram     => $ideogram,
+									start_offset => ideogram_spacing_helper( $ideogram->{break}{start} ),
+									start        => $start,
+									end          => $start,
+									fillcolor    => $style_data->{fill_color},
+									thickness    => $thickness,
+									style_data   => $style_data
+								 });
+		}
+		if ($ideogram->{break}{end} && $ideogram->{next}{chr} ne $ideogram->{chr}) {
 	    my $start = $ideogram->{reverse} ? $ideogram->{set}->min : $ideogram->{set}->max;
-	    draw_break({chr      => $ideogram->{chr},
-			ideogram => $ideogram,
-			end_offset => ideogram_spacing_helper( $ideogram->{break}{end}),
-			start      => $start,
-			end        => $start,
-			fillcolor  => $style_data->{fill_color},
-			thickness  => $thickness,
-			style_data => $style_data
-		       });
-	}
-	if ( $ideogram->{chr} eq $ideogram->{next}{chr} ) {
+	    draw_break({chr        => $ideogram->{chr},
+									ideogram   => $ideogram,
+									end_offset => ideogram_spacing_helper($ideogram->{break}{end}),
+									start      => $start,
+									end        => $start,
+									fillcolor  => $style_data->{fill_color},
+									thickness  => $thickness,
+									style_data => $style_data
+								 });
+		}
+		if ( $ideogram->{chr} eq $ideogram->{next}{chr} ) {
 	    if ($radius_change) {
-		draw_break({chr      => $ideogram->{chr},
-			    ideogram => $ideogram,
-			    start    => $ideogram->{set}->max,
-			    end      => $ideogram_next->{set}->min,
-			    end_offset => -ideogram_spacing_helper($ideogram->{break}{end}),
-			    fillcolor  => $style_data->{fill_color},
-			    thickness  => $thickness,
-			    style_data => $style_data
-			   });
-		draw_break({chr      => $ideogram->{chr},
-			    ideogram => $ideogram_next,
-			    start    => $ideogram->{set}->max,
-			    end      => $ideogram_next->{set}->min,
-			    start_offset => -ideogram_spacing_helper( $ideogram->{break}{start}),
-			    fillcolor  => $style_data->{fill_color},
-			    thickness  => $thickness,
-			    style_data => $style_data
-			   });
+				draw_break({chr      => $ideogram->{chr},
+										ideogram => $ideogram,
+										start    => $ideogram->{set}->max,
+										end      => $ideogram_next->{set}->min,
+										end_offset => -ideogram_spacing_helper($ideogram->{break}{end}),
+										fillcolor  => $style_data->{fill_color},
+										thickness  => $thickness,
+										style_data => $style_data
+									 });
+				draw_break({chr      => $ideogram->{chr},
+										ideogram => $ideogram_next,
+										start    => $ideogram->{set}->max,
+										end      => $ideogram_next->{set}->min,
+										start_offset => -ideogram_spacing_helper( $ideogram->{break}{start}),
+										fillcolor  => $style_data->{fill_color},
+										thickness  => $thickness,
+										style_data => $style_data
+									 });
 	    } else {
-		my $start = $ideogram->{reverse}      ? $ideogram->{set}->min : $ideogram->{set}->max;
-		my $end   = $ideogram_next->{reverse} ? $ideogram_next->{set}->max : $ideogram_next->{set}->min;
-		draw_break({chr        => $ideogram->{chr},
-			    ideogram   => $ideogram,
-			    start      => $start,
-			    end        => $end,
-			    fillcolor  => $style_data->{fill_color},
-			    thickness  => $thickness,
-			    style_data => $style_data
-			   });
+				my $start = $ideogram->{reverse}      ? $ideogram->{set}->min : $ideogram->{set}->max;
+				my $end   = $ideogram_next->{reverse} ? $ideogram_next->{set}->max : $ideogram_next->{set}->min;
+				draw_break({chr        => $ideogram->{chr},
+										ideogram   => $ideogram,
+										start      => $start,
+										end        => $end,
+										fillcolor  => $style_data->{fill_color},
+										thickness  => $thickness,
+										style_data => $style_data
+									 });
 	    }
-	}
-    } elsif ( $style_id == 2 ) {
-	# two radial break lines
-	if ($ideogram->{break}{start} && $ideogram->{prev}{chr} ne $ideogram->{chr} ) {
+		}
+	} elsif ( $style_id == 2 ) {
+		# two radial break lines
+		if ($ideogram->{break}{start} && $ideogram->{prev}{chr} ne $ideogram->{chr} ) {
 	    my $start = $ideogram->{reverse} ? $ideogram->{set}->max : $ideogram->{set}->min;
 	    draw_break({chr        => $ideogram->{chr},
-			ideogram   => $ideogram,
-			start      => $start,
-			end        => $start,
-			thickness  => $thickness,
-			style_data => $style_data
-		       });
-	    }
-	if ($ideogram->{break}{end} && $ideogram->{next}{chr} ne $ideogram->{chr}) {
+									ideogram   => $ideogram,
+									start      => $start,
+									end        => $start,
+									thickness  => $thickness,
+									style_data => $style_data
+								 });
+			if($style_data->{double_line}) {
+				draw_break({chr        => $ideogram->{chr},
+										ideogram   => $ideogram,
+										start_offset => ideogram_spacing_helper( $ideogram->{break}{start} ),
+										start      => $start,
+										thickness  => $thickness,
+										style_data => $style_data
+									 });
+			}
+		}
+		if ($ideogram->{break}{end} && $ideogram->{next}{chr} ne $ideogram->{chr}) {
 	    my $start = $ideogram->{reverse} ? $ideogram->{set}->min : $ideogram->{set}->max;
 	    draw_break({chr        => $ideogram->{chr},
-			ideogram   => $ideogram,
-			start      => $start,
-			end        => $start,
-			thickness  => $thickness,
-			style_data => $style_data
-		       });
-	}
-	if ( $ideogram->{next}{chr} eq $ideogram->{chr} ) {
-	    my $start = $ideogram->{reverse}      ? $ideogram->{set}->min : $ideogram->{set}->max;
+									ideogram   => $ideogram,
+									start      => $start,
+									end        => $start,
+									thickness  => $thickness,
+									style_data => $style_data
+								 });
+			if($style_data->{double_line}) {
+				draw_break({chr        => $ideogram->{chr},
+										ideogram   => $ideogram,
+										end_offset => ideogram_spacing_helper( $ideogram->{break}{end} ),
+										end        => $start,
+										thickness  => $thickness,
+										style_data => $style_data
+									 });
+			}
+		}
+		if ( $ideogram->{next}{chr} eq $ideogram->{chr} ) {
+	    my $start = $ideogram->{reverse}      ? $ideogram->{set}->min      : $ideogram->{set}->max;
 	    my $end   = $ideogram_next->{reverse} ? $ideogram_next->{set}->max : $ideogram_next->{set}->min;
 	    draw_break({chr        => $ideogram->{chr},
-			ideogram   => $ideogram,
-			start      => $start,
-			end        => $start,
-			thickness  => $thickness,
-			style_data => $style_data
-		    });
+									ideogram   => $ideogram,
+									start      => $start,
+									end        => $start,
+									thickness  => $thickness,
+									style_data => $style_data
+								 });
 	    draw_break({chr        => $ideogram_next->{chr},
-			ideogram   => $ideogram_next,
-			start      => $end,
-			end        => $end,
-			thickness  => $thickness,
-			style_data => $style_data
-		       });
+									ideogram   => $ideogram_next,
+									start      => $end,
+									end        => $end,
+									thickness  => $thickness,
+									style_data => $style_data
+								 });
+		}
 	}
-    }
 }
 
 # -------------------------------------------------------------------
 sub draw_break {
-    my $args          = shift;
-    my $ideogram      = $args->{ideogram};
-    my $style_data    = $args->{style_data};
+	my $args          = shift;
+	my $ideogram      = $args->{ideogram};
+	my $style_data    = $args->{style_data};
 
-    my $id_radius_outer = $DIMS->{ideogram}{ $ideogram->{tag} }{radius_outer};
-    my $id_t            = $DIMS->{ideogram}{ $ideogram->{tag} }{thickness};
+	my $id_radius_outer = $DIMS->{ideogram}{ $ideogram->{tag} }{radius_outer};
+	my $id_t            = $DIMS->{ideogram}{ $ideogram->{tag} }{thickness};
 
-    my $radius_from = $id_radius_outer - $id_t/2 - $args->{thickness}/2;
-    my $radius_to   = $id_radius_outer - $id_t/2 + $args->{thickness}/2;
+	my $radius_from = $id_radius_outer - $id_t/2 - $args->{thickness}/2;
+	my $radius_to   = $id_radius_outer - $id_t/2 + $args->{thickness}/2;
 
-    slice(image        => $IM,
-	  chr          => $args->{chr},
-	  start        => $args->{start},
-	  end          => $args->{end},
-	  start_offset => $args->{start_offset},
-	  end_offset   => $args->{end_offset},
-	  fillcolor    => $args->{fillcolor},
-	  radius_from  => $radius_from,
-	  radius_to    => $radius_to,
-	  edgecolor    => $style_data->{stroke_color},
-	  edgestroke   => unit_strip($style_data->{stroke_thickness}),
-	);
+	slice(image        => $IM,
+				chr          => $args->{chr},
+				start        => $args->{start},
+				end          => $args->{end},
+				start_offset => $args->{start_offset},
+				end_offset   => $args->{end_offset},
+				fillcolor    => $args->{fillcolor},
+				radius_from  => $radius_from,
+				radius_to    => $radius_to,
+				edgecolor    => $style_data->{stroke_color},
+				edgestroke   => unit_strip($style_data->{stroke_thickness}),
+			 );
 }
 
 # -------------------------------------------------------------------
@@ -4290,8 +4640,7 @@ sub draw_ticks {
 	my $chr              = $ideogram->{chr};
 
 	my @requested_ticks = make_list( $CONF{ticks}{tick} );
-
-	if(@requested_ticks > fetch_conf("max_ticks")) {
+	if (@requested_ticks > fetch_conf("max_ticks")) {
 		fatal_error("ticks","too_many",int(@requested_ticks),$chr);
 	}
 
@@ -4315,10 +4664,10 @@ sub draw_ticks {
 	# chromosomes = hs1:10-20
 	# chromosomes = -hs1:10-20
 	#
-    
+
   for my $tick (@requested_ticks) {
     next if defined $tick->{_ideogram};
-    
+		
     my $show_default    = seek_parameter( "chromosomes_display_default", $tick, $CONF{ticks} )
       || ! defined seek_parameter( "chromosomes_display_default", $tick, $CONF{ticks} );
     my $ideogram_filter = seek_parameter( "chromosomes", $tick, $CONF{ticks} );
@@ -4335,15 +4684,17 @@ sub draw_ticks {
   for my $tick (@requested_ticks) {
     # do not process this tick if it is not being shown
     next if !show_element($tick);
-    process_tick_structure( $tick, $ideogram );
+    $tick = process_tick_structure($tick,$ideogram);
   }
+
+	#printdumper($ideogram->{chr},\@requested_ticks);
 
   # keep track of whether ticks have been drawn at a given radius
   my %pos_ticked;
-    
+
 	my $max_tick_length = max( grep($_, map { unit_strip($_->{size},"p") } @requested_ticks ) );
 	$DIMS->{tick}{max_tick_length} = $max_tick_length;
-    
+
 	my @ticks;
   my $tick_groups;
 
@@ -4371,22 +4722,22 @@ sub draw_ticks {
       #
       my $dims_key;
       if ( seek_parameter( "spacing", $tickdata, $CONF{ticks} ) ) {
-	  $dims_key = join( $COLON, $tickdata->{spacing}, $tick_radius );
-	  my ( $mb_pos_start, $mb_pos_end );
-	  if ( match_string(seek_parameter( "spacing_type", $tickdata, $CONF{ticks} ), "relative" ) ) {
-	      if ( match_string(seek_parameter("rdivisor|label_rdivisor", $tickdata, $CONF{ticks} ), "ideogram" )) {
-		  # IDEOGRAM RELATIVE
-		  # the start/end position will be the start-end range of this ideogram
-		  # i.e. - relative positions will start at the start of ideogram crop, relative to chr length
-		  $mb_pos_start = Math::BigFloat->new( $ideogram->{set}->min );
-		  $mb_pos_end   = $ideogram->{set}->max + 1;
-	      } else {
-		  # CHROMOSOME RELATIVE
-		  # the start/end position will be the 0-chrlen for this ideogram
-		  # i.e. - relative positions will start at 0 
-		  $mb_pos_start = Math::BigFloat->new(0);
-		  $mb_pos_end   = $ideogram->{chrlength} - 1;
-	      }
+				$dims_key = join( $COLON, $tickdata->{spacing}, $tick_radius );
+				my ( $mb_pos_start, $mb_pos_end );
+				if ( match_string(seek_parameter( "spacing_type", $tickdata, $CONF{ticks} ), "relative" ) ) {
+					if ( match_string(seek_parameter("rdivisor|label_rdivisor", $tickdata, $CONF{ticks} ), "ideogram" )) {
+						# IDEOGRAM RELATIVE
+						# the start/end position will be the start-end range of this ideogram
+						# i.e. - relative positions will start at the start of ideogram crop, relative to chr length
+						$mb_pos_start = Math::BigFloat->new( $ideogram->{set}->min );
+						$mb_pos_end   = $ideogram->{set}->max + 1;
+					} else {
+						# CHROMOSOME RELATIVE
+						# the start/end position will be the 0-chrlen for this ideogram
+						# i.e. - relative positions will start at 0 
+						$mb_pos_start = Math::BigFloat->new(0);
+						$mb_pos_end   = $ideogram->{chrlength} - 1;
+					}
 				} else {
 					$mb_pos_start = nearest( $tickdata->{spacing}, $ideogram->{set}->min );
 					$mb_pos_end   = nearest( $tickdata->{spacing}, $ideogram->{set}->max );
@@ -4402,8 +4753,8 @@ sub draw_ticks {
 					push @mb_pos, $mb_pos;
 				}
       } elsif ( seek_parameter( "position", $tickdata, $CONF{ticks} ) ) {
-				$dims_key = join( $COLON, join( $EMPTY_STR, @{ $tickdata->{position} } ), $tick_radius );
-				@mb_pos = sort {$a <=> $b} @{ $tickdata->{position} };
+				$dims_key = join( $COLON, join( $EMPTY_STR, @{ $tickdata->{_position} } ), $tick_radius );
+				@mb_pos = sort {$a <=> $b} @{ $tickdata->{_position} };
       }
 
       printdebug_group("tick","spacing",$tickdata->{spacing},"positions",@mb_pos);
@@ -4511,15 +4862,17 @@ sub draw_ticks {
 																									 getanglepos($pos+$tickdata->{spacing}*($i+1),$chr));
 						push @pix_sep, $d;
 					}
-					my $pix_sep = average(@pix_sep);
+					my $pix_sep = average(@pix_sep) if @pix_sep;
 					$tickdata->{pix_sep} = $pix_sep;
-					# determine whether to draw the tick based on requirement of minimum tick separation, if defined
-					my $min_sep = unit_strip(unit_validate(seek_parameter("tick_separation", $tickdata, $CONF{ticks}),
-																								 "ticks/tick/tick_separation",
-																								 "p","n"
-																								));
+					# determine whether to draw the tick based on requirement of
+					# minimum tick separation, if defined
+					my $min_sep = 
+						unit_strip(unit_validate(seek_parameter("tick_separation", $tickdata, $CONF{ticks}),
+																		 "ticks/tick/tick_separation",
+																		 "p","n"
+																		));
 					# don't draw this tick - move to next one
-					if (defined $pix_sep && $pix_sep < $min_sep) {
+					if (defined $pix_sep && defined $min_sep && $pix_sep < $min_sep) {
 						$tick_color = "red";
 						next;
 					}
@@ -4598,8 +4951,9 @@ sub draw_ticks {
 						 && seek_parameter( "show_label", $tickdata, $CONF{ticks} )
 						 && $edge_d_min >= $DIMS->{tick}{$dims_key}{min_label_distance_to_edge} ) {
 					my $tick_label;
-					my $multiplier  = unit_parse(seek_parameter("multiplier|label_multiplier", $tickdata, $CONF{ticks} ) ) || 1;
+					my $multiplier  = unit_parse(parse_suffixed_number(seek_parameter("multiplier|label_multiplier", $tickdata, $CONF{ticks} ) ) || 1);
 					my $rmultiplier = unit_parse(seek_parameter("rmultiplier|label_rmultiplier", $tickdata, $CONF{ticks})) || 1;
+
 					#
 					# position, relative to ideogram size, or chromosome size, as requested by
 					#
@@ -4747,9 +5101,10 @@ sub draw_ticks {
 													 $label_width,
 													 $label_height
 													);
-	  
+
 					$tick_group_entry->{labeldata} = {
-																						label_separation => seek_parameter("label_separation", $tickdata, $CONF{ticks}),
+																						label_separation => seek_parameter("label_separation", 
+																																							 $tickdata, $CONF{ticks}),
 																						fontkey  => $tickfontkey,
 																						font     => $tickfontfile,
 																						fontname => $tickfontname,
@@ -4956,16 +5311,16 @@ sub draw_ticks {
 				next;
 			}
 			Circos::Text::draw_text(
-									text        => $tick->{labeldata}{text},
-									font        => $tick->{labeldata}{fontkey},
-									size        => $tick->{labeldata}{size},
-									color       => $tick->{labeldata}{color},
-									angle       => $tick->{labeldata}{pangle},
-									radius      => $tick->{labeldata}{radius},
-									is_rotated  => $tick->{labeldata}{is_rotated},
-									is_parallel => $tick->{labeldata}{is_parallel},
-									guides      => fetch_conf("guides","object","tick_label") || fetch_conf("guides","object","all"),
-								 );
+															text        => $tick->{labeldata}{text},
+															font        => $tick->{labeldata}{fontkey},
+															size        => $tick->{labeldata}{size},
+															color       => $tick->{labeldata}{color},
+															angle       => $tick->{labeldata}{pangle},
+															radius      => $tick->{labeldata}{radius},
+															is_rotated  => $tick->{labeldata}{is_rotated},
+															is_parallel => $tick->{labeldata}{is_parallel},
+															guides      => fetch_conf("guides","object","tick_label") || fetch_conf("guides","object","all"),
+														 );
     }
   }
 }
@@ -4981,12 +5336,17 @@ sub process_tick_structure {
   # do some up-front munging of the tick data structures
   my ( $tick, $ideogram ) = @_;
 
+	$tick = Clone::clone($tick);
+
   # handle relatively spaced ticks (e.g. every 0.1), or ticks at
   # specific relative position (e.g. at 0.1)
 
+	my $chr = $ideogram->{chr};
+	my $ideogram_idx = $ideogram->{idx};
+
   if ( match_string(seek_parameter( "spacing_type", $tick, $CONF{ticks} ), "relative" )) {
     if (!defined seek_parameter( "rspacing|rposition", $tick, $CONF{ticks} ) ) {
-      croak "error processing tick - this tick's spacing_type is ",
+      confess "error processing tick - this tick's spacing_type is ",
 				"set to relative, but no rspacing or rposition parameter is set";
     }
     if ( seek_parameter( "rspacing", $tick, $CONF{ticks} ) ) {
@@ -5017,7 +5377,6 @@ sub process_tick_structure {
 				map { unit_validate( $_, "ticks/tick/rposition", qw(n) ) }
 					split( /,/, seek_parameter( "rposition", $tick, $CONF{ticks} ) );
       @rpos = map { Math::BigFloat->new($_) } @rpos;
-
       my $divisor;
       if (match_string(seek_parameter("rdivisor|label_rdivisor", $tick, $CONF{ticks}), "ideogram")) {
 				$divisor = $ideogram->{set}->cardinality;
@@ -5026,40 +5385,40 @@ sub process_tick_structure {
       }
 
       @rpos = map { $_ * $divisor } @rpos;
-      $tick->{position} = \@rpos;
+      $tick->{_position} = \@rpos;
     }
   } else {
-    if ( ! $tick->{_processed} ) {
+    if ( ! $tick->{_processed}{$ideogram_idx} ) {
       if ( seek_parameter( "spacing", $tick, $CONF{ticks} ) ) {
-				$tick->{spacing} = unit_convert(from    => unit_validate(seek_parameter( "spacing", $tick, $CONF{ticks} ),
-																																 "ticks/tick/spacing", qw(u b)),
+				$tick->{spacing} = unit_convert(from    => unit_validate(parse_suffixed_number(seek_parameter("spacing",$tick,$CONF{ticks})),
+																																 "ticks/tick/spacing", qw(u n b)),
 																				to      => "b",
 																				factors => { ub => $CONF{chromosomes_units} }
 																			 );
-      } elsif ( seek_parameter( "position", $tick, $CONF{ticks} ) ) {
+      } elsif ( defined seek_parameter("position",$tick,$CONF{ticks})) {
 				my @pos;
-				for my $pos (split( /,/,seek_parameter( "position", $tick, $CONF{ticks} ) )) {
+				for my $pos (split( /,/,seek_parameter("position",$tick,$CONF{ticks}))) {
 					if ($pos eq "start") {
-						$pos = $ideogram->{set}->min . "b";
+						$pos = $ideogram->{set}->min;
 					} elsif ($pos eq "end") {
-						$pos = $ideogram->{set}->max . "b";
+						$pos = $ideogram->{set}->max;
 					} 
 					push @pos, $pos;
 				}
-				@pos = map { unit_convert( from    => unit_validate( $_, "ticks/tick/position", qw(u b) ),
+				@pos = map { unit_convert( from    => unit_validate( parse_suffixed_number($_), "ticks/tick/position", qw(u n b) ),
 																	 to      => "b",
 																	 factors => { ub => $CONF{chromosomes_units} }
 																 ) } @pos;
-				$tick->{position} = \@pos;
+				$tick->{_position} = \@pos;
 				#$tick->{spacing} = join(",",@pos).$tick->{radius};
       } else {
-				croak "error processing tick - this tick's spacing_type is ",
+				confess "error processing tick - this tick's spacing_type is ",
 					"set to absolute, but no spacing or position parameter is set";
       }
     }
   }
 
-  if ( !$tick->{_processed} ) {
+  if ( !$tick->{_processed}{$ideogram_idx} ) {
     if ( seek_parameter( "grid", $tick, $CONF{ticks} ) ) {
       $tick->{grid_thickness} = unit_strip(
 																					 unit_validate(
@@ -5073,7 +5432,7 @@ sub process_tick_structure {
     }
   }
 
-  my $dims_key = $tick->{spacing} || join($EMPTY_STR, @{ $tick->{position} });
+  my $dims_key = $tick->{spacing} || join($EMPTY_STR, @{ $tick->{_position} });
   my @tick_radius;
 
   if ( $tick->{radius} ) {
@@ -5109,7 +5468,7 @@ sub process_tick_structure {
 																																													"ticks/tick/thickness", qw(n r p)
 																																												 ),
 																																		to      => "p",
-																																		factors => { rp => $DIMS->{tick}{ $tick->{spacing} || $tick->{position} }{size} }
+																																		factors => { rp => $DIMS->{tick}{ $tick->{spacing} || $tick->{_position} }{size} }
 																																	 ));
 
 			$tick->{thickness} = $DIMS->{tick}{$dims_key}{thickness};
@@ -5148,7 +5507,8 @@ sub process_tick_structure {
 																				 ));
 
   $tick->{_radius} = \@tick_radius;
-  $tick->{_processed}++;
+  $tick->{_processed}{$ideogram_idx}++;
+	return $tick;
 }
 
 # -------------------------------------------------------------------
@@ -5172,11 +5532,11 @@ sub ideogram_spacing {
   my ( $chr1, $chr2 ) = ( $id1->{chr}, $id2->{chr} );
   my ( $tag1, $tag2 ) = ( $id1->{tag}, $id2->{tag} );
 
-  if(exists $DIMS->{ideogram}{spacing}{ sprintf( "%d %d", $id1->{idx}, $id2->{idx} ) } ) {
+  if (exists $DIMS->{ideogram}{spacing}{ sprintf( "%d %d", $id1->{idx}, $id2->{idx} ) } ) {
 		return $DIMS->{ideogram}{spacing}{ sprintf( "%d %d", $id1->{idx}, $id2->{idx} ) };
 	}
 
-	if(! exists $DIMS->{ideogram}{spacing}{default}) {
+	if (! exists $DIMS->{ideogram}{spacing}{default}) {
 		$DIMS->{ideogram}{spacing}{default} = unit_convert(
 																											 from    => $CONF{ideogram}{spacing}{default},
 																											 to      => "b",
@@ -5209,8 +5569,8 @@ sub ideogram_spacing {
 					for my $str (keys %{$leaf->{pairwise}}) {
 						my ($str1,$str2) = split($delim,$str);
 						my ($rx1,$rx2)   = (parse_as_rx($str1),parse_as_rx($str2));
-						if(defined $rx1 && defined $rx2) {
-							if($keys[$ki] =~ $rx1 && $keys[$kj] =~ $rx2) {
+						if (defined $rx1 && defined $rx2) {
+							if ($keys[$ki] =~ $rx1 && $keys[$kj] =~ $rx2) {
 								$spacing       = ideogram_spacing_helper($leaf->{pairwise}{$str}{spacing});
 								$spacing_found = 1;
 								#printinfo($keys[$ki],$keys[$kj],$spacing,"rx");
@@ -5235,8 +5595,8 @@ sub ideogram_spacing {
 				for my $str (keys %{$leaf->{pairwise}}) {
 					next if $str =~ /\s/;
 					my $rx = parse_as_rx($str);
-					if(defined $rx) {
-						if($keys[$ki] =~ /$rx/) {
+					if (defined $rx) {
+						if ($keys[$ki] =~ /$rx/) {
 							$spacing       = ideogram_spacing_helper($leaf->{pairwise}{$str}{spacing});
 							$spacing_found = 1;
 							last KI2;
@@ -5270,7 +5630,7 @@ sub ideogram_spacing {
 
 	my $scale_type = fetch_conf("relative_scale_spacing") || "min";
 	my $scale_multiplier;
-	if($scale_type =~ /$RE{num}{real}/) {
+	if ($scale_type =~ /$RE{num}{real}/) {
 		$scale_multiplier = $scale_type;
 		fatal_error("ideogram","bad_spacing_scale",$scale_type) if $scale_type <= 0;
 	} else {
@@ -5278,7 +5638,7 @@ sub ideogram_spacing {
 		my @covers  = map { @{$_->{covers}}} @ids;
 		my @scales  = map { $_->{scale} } @covers;
 		#printinfo(@scales);
-		if($scale_type =~ /max/) {
+		if ($scale_type =~ /max/) {
 			$scale_multiplier = max(@scales);
 		} elsif ($scale_type =~ /min/) {
 			$scale_multiplier = min(@scales);
@@ -5298,7 +5658,7 @@ sub ideogram_spacing {
 	#printinfo($scale_multiplier);
 	$spacing *= $scale_multiplier;
 	
-	if(not_defined_or_one($cache)) {
+	if (not_defined_or_one($cache)) {
 		$DIMS->{ideogram}{spacing}{ sprintf( "%d %d", $id1->{idx}, $id2->{idx} ) } = $spacing;
 		$DIMS->{ideogram}{spacing}{ sprintf( "%d %d", $id2->{idx}, $id1->{idx} ) } = $spacing;
 	}
@@ -5308,51 +5668,51 @@ sub ideogram_spacing {
 ################################################################
 # parse ideogram order from parameter or file
 sub read_chromosomes_order {
-    my @chrorder;
-    # construct a list of ordered chromosomes, from one of
-    # - 'chromosomes_order' parameter
-    # - 'chromosomes_order_file' input file
-    # - native order from karyotype
-    if ( $CONF{chromosomes_order} ) {
-	@chrorder = @ { Circos::Configuration::make_parameter_list_array( $CONF{chromosomes_order} ) };
-    } elsif ( $CONF{chromosomes_order_file} ) {
-	$CONF{chromosomes_order_file} = locate_file( $CONF{chromosomes_order_file}, name=>"chromosome order file" );
-	open(CHRORDER, $CONF{chromosomes_order_file}) 
+	my @chrorder;
+	# construct a list of ordered chromosomes, from one of
+	# - 'chromosomes_order' parameter
+	# - 'chromosomes_order_file' input file
+	# - native order from karyotype
+	if ( $CONF{chromosomes_order} ) {
+		@chrorder = @ { Circos::Configuration::make_parameter_list_array( $CONF{chromosomes_order} ) };
+	} elsif ( $CONF{chromosomes_order_file} ) {
+		$CONF{chromosomes_order_file} = locate_file( $CONF{chromosomes_order_file}, name=>"chromosome order file" );
+		open(CHRORDER, $CONF{chromosomes_order_file}) 
 	    || fatal_error("io","cannot_read",$CONF{chromosomes_order_file},"chromosome order",$!);
-	while (<CHRORDER>) {
+		while (<CHRORDER>) {
 	    chomp;
 	    my ($tag) = split;
 	    push( @chrorder, $tag );
+		}
+		close(CHRORDER);
+	} else {
+		@chrorder = ($CARAT, 
+								 sort { $KARYOTYPE->{$a}{chr}{display_order} <=> $KARYOTYPE->{$b}{chr}{display_order} } 
+								 keys %$KARYOTYPE
+								);
 	}
-	close(CHRORDER);
-    } else {
-	@chrorder = ($CARAT, 
-		     sort { $KARYOTYPE->{$a}{chr}{display_order} <=> $KARYOTYPE->{$b}{chr}{display_order} } 
-		     keys %$KARYOTYPE
-	    );
-    }
 
-    my %seen_tag;
-    my @tags = map { $_->{tag} =~ /__/ ? $_->{chr} : $_->{tag} } @IDEOGRAMS;
-    my $n = 0;
-    for my $tag (@chrorder) {
-	my $tag_found = grep( $_ eq $tag, @tags );
-	if ($tag_found) {
+	my %seen_tag;
+	my @tags = map { $_->{tag} =~ /__/ ? $_->{chr} : $_->{tag} } @IDEOGRAMS;
+	my $n = 0;
+	for my $tag (@chrorder) {
+		my $tag_found = grep( $_ eq $tag, @tags );
+		if ($tag_found) {
 	    if ( $seen_tag{$tag}++ ) {
-		fatal_error("ideogram","multiple_tag",$tag);
+				fatal_error("ideogram","multiple_tag",$tag);
 	    }
-	} elsif ( $tag ne $PIPE && $tag ne $DOLLAR && $tag ne $CARAT && $tag ne $DASH
-		  && ! grep($_->{tag} eq $tag, @IDEOGRAMS)
-		  && ! grep($_ eq $tag, keys %$KARYOTYPE) ) {
+		} elsif ( $tag ne $PIPE && $tag ne $DOLLAR && $tag ne $CARAT && $tag ne $DASH
+							&& ! grep($_->{tag} eq $tag, @IDEOGRAMS)
+							&& ! grep($_ eq $tag, keys %$KARYOTYPE) ) {
 	    fatal_error("ideogram","orphan_tag",$tag);
+		}
+		$n++ if $tag_found || $tag eq $DASH;
 	}
-	$n++ if $tag_found || $tag eq $DASH;
-    }
-    if ( $n > @IDEOGRAMS ) {
-	my $ni = @IDEOGRAMS;
-	printwarning("You have more tags [$n] in the chromosomes_order field than ideograms [$ni]. Circos may not be able to correctly order the display");
-    }
-    return @chrorder;
+	if ( $n > @IDEOGRAMS ) {
+		my $ni = @IDEOGRAMS;
+		printwarning("You have more tags [$n] in the chromosomes_order field than ideograms [$ni]. Circos may not be able to correctly order the display");
+	}
+	return @chrorder;
 }
 
 ################################################################
@@ -5438,18 +5798,19 @@ sub register_chromosomes_direction {
 
 # -------------------------------------------------------------------
 sub register_chromosomes_radius {
-  my @chrs = split( /[;,]/, $CONF{chromosomes_radius} );
-  #
+	my $chromosomes_radius = shift;
+  my @chrs = split( /[;,]/, $chromosomes_radius );
+	
   # Each ideogram can be at a different radius, but for now register the
   # default position for ideograms.
-  #
+	
   $DIMS->{ideogram}{default}{radius} = unit_parse(unit_convert(
 																															 from =>
 																															 unit_validate( $CONF{ideogram}{radius}, "ideogram/radius", qw(r p) ),
 																															 to      => "p",
 																															 factors => { rp => $DIMS->{image}{radius} }
 																															));
-
+	
   $DIMS->{ideogram}{default}{thickness} = unit_convert(
 																											 from => 
 																											 unit_validate($CONF{ideogram}{thickness},"ideogram/thickness", qw(r p) ),
@@ -5462,33 +5823,60 @@ sub register_chromosomes_radius {
   $DIMS->{ideogram}{default}{radius_outer}  = $DIMS->{ideogram}{default}{radius};
   $DIMS->{ideogram}{default}{label}{radius} = unit_parse( $CONF{ideogram}{label_radius} );
 
-  #
   # legacy
-  #
   $DIMS->{ideogram}{thickness} = $DIMS->{ideogram}{default}{thickness};
-  #
   # end legacy
-  #
 
- PAIR:
-  for my $pair (@chrs) {
-    my ( $tag, $radius ) = Circos::Configuration::parse_var_value($pair);
+	# support for rx in chromosomes_radius
+	my $radius_conf_str = fetch_conf("chromosomes_radius") || fetch_conf("chromosome_radius");
+	if ($radius_conf_str) {
+		my @radius_list = @{Circos::Configuration::make_parameter_list_array($radius_conf_str)};
+		for my $is_rx (1,0) {
+			for my $radius_pair (@radius_list) {
+				my ($key,$value) = Circos::Configuration::parse_var_value($radius_pair);
+				my $radius = unit_convert(from => unit_validate( $value, "ideogram/radius", qw(r p) ),
+																	to   => "p",
+																	factors => { rp => $DIMS->{ideogram}{default}{radius} }
+																 );
+				my $rx           = parse_as_rx($key);
+				if ($is_rx) {
+					next unless $rx;
+				} else {
+					next if $rx;
+				}
+				for my $ideogram (@IDEOGRAMS) {
+					my $tag = $ideogram->{tag};
+					my $chr = $ideogram->{chr};
+					my $match = match_string( $tag,$rx||$key ) || match_string( $chr,$rx||$key );
+					if ($match) {
+						$DIMS->{ideogram}{$tag}{radius} = $radius;
+						$ideogram->{radius}        = $DIMS->{ideogram}{$tag}{radius};
+						$ideogram->{radius_outer}  = $DIMS->{ideogram}{$tag}{radius};
+						$ideogram->{radius_middle} = $DIMS->{ideogram}{$tag}{radius} - $DIMS->{ideogram}{default}{thickness}/2;
+						$ideogram->{radius_inner}  = $DIMS->{ideogram}{$tag}{radius} - $DIMS->{ideogram}{default}{thickness};
+					}
+				}
+			}
+		}
+	}
 
-    $DIMS->{ideogram}{$tag}{radius} = unit_convert(
-																									 from => unit_validate( $radius, "ideogram/radius", qw(r p) ),
-																									 to   => "p",
-																									 factors => { rp => $DIMS->{ideogram}{default}{radius} }
-																									);
-
-    for my $ideogram (@IDEOGRAMS) {
-      if ( $ideogram->{tag} eq $tag || $ideogram->{chr} eq $tag ) {
-				$ideogram->{radius}        = $DIMS->{ideogram}{$tag}{radius};
-				$ideogram->{radius_outer}  = $DIMS->{ideogram}{$tag}{radius};
-				$ideogram->{radius_middle} = $DIMS->{ideogram}{$tag}{radius} - $DIMS->{ideogram}{default}{thickness}/2;
-				$ideogram->{radius_inner}  = $DIMS->{ideogram}{$tag}{radius} - $DIMS->{ideogram}{default}{thickness};
-      }
-    }
-  }
+	# PAIR:
+	#  for my $pair (@chrs) {
+	#    my ( $tag, $radius ) = Circos::Configuration::parse_var_value($pair);
+	#    $DIMS->{ideogram}{$tag}{radius} = unit_convert(
+	#																									 from => unit_validate( $radius, "ideogram/radius", qw(r p) ),
+	#																									 to   => "p",
+	#																									 factors => { rp => $DIMS->{ideogram}{default}{radius} }
+	#																									);
+	#  for my $ideogram (@IDEOGRAMS) {
+	#      if ( $ideogram->{tag} eq $tag || $ideogram->{chr} eq $tag ) {
+	#				$ideogram->{radius}        = $DIMS->{ideogram}{$tag}{radius};
+	#				$ideogram->{radius_outer}  = $DIMS->{ideogram}{$tag}{radius};
+	#				$ideogram->{radius_middle} = $DIMS->{ideogram}{$tag}{radius} - $DIMS->{ideogram}{default}{thickness}/2;
+	#				$ideogram->{radius_inner}  = $DIMS->{ideogram}{$tag}{radius} - $DIMS->{ideogram}{default}{thickness};
+	#    }
+	#   }
+	# }
 
   #
   # By default, each ideogram's radial position is the default one,
@@ -5504,17 +5892,12 @@ sub register_chromosomes_radius {
     $ideogram->{radius_middle} ||= $DIMS->{ideogram}{default}{radius_middle};
     $ideogram->{thickness}     ||= $DIMS->{ideogram}{default}{thickness};
 
-    $DIMS->{ideogram}{ $ideogram->{tag} }{radius} ||= $ideogram->{radius};
-    $DIMS->{ideogram}{ $ideogram->{tag} }{radius_inner} ||=
-      $ideogram->{radius_inner};
-    $DIMS->{ideogram}{ $ideogram->{tag} }{radius_middle} ||=
-      $ideogram->{radius_middle};
-    $DIMS->{ideogram}{ $ideogram->{tag} }{radius_outer} ||=
-      $ideogram->{radius_outer};
-    $DIMS->{ideogram}{ $ideogram->{tag} }{thickness} ||=
-      $ideogram->{thickness};
-    $DIMS->{ideogram}{ $ideogram->{tag} }{label}{radius} ||=
-      unit_parse( $CONF{ideogram}{label_radius}, $ideogram );
+    $DIMS->{ideogram}{ $ideogram->{tag} }{radius}        ||= $ideogram->{radius};
+    $DIMS->{ideogram}{ $ideogram->{tag} }{radius_inner}  ||= $ideogram->{radius_inner};
+    $DIMS->{ideogram}{ $ideogram->{tag} }{radius_middle} ||= $ideogram->{radius_middle};
+    $DIMS->{ideogram}{ $ideogram->{tag} }{radius_outer}  ||= $ideogram->{radius_outer};
+    $DIMS->{ideogram}{ $ideogram->{tag} }{thickness}     ||= $ideogram->{thickness};
+    $DIMS->{ideogram}{ $ideogram->{tag} }{label}{radius} ||= unit_parse( $CONF{ideogram}{label_radius}, $ideogram );
   }
 }
 
@@ -5573,15 +5956,12 @@ sub create_ideogram_set {
 											end       => $set->max,
 											size      => $set->cardinality,
 										 };
-			if($ideogram->{tag} eq $ideogram->{chr}) {
+			if ($ideogram->{tag} eq $ideogram->{chr}) {
 	      $ideogram->{chr_with_tag} = $ideogram->{label};
 			} else {
 	      $ideogram->{chr_with_tag} = $ideogram->{label}.$ideogram->{tag};
 			}
 
-			# v0.63
-			# straight copy of code from Karyotype.pm to apply color from chromosomes_color
-			# based on ideogram tag
 			my $color_conf_str = fetch_conf("chromosomes_color") || fetch_conf("chromosome_color");
 	    if ($color_conf_str) {
 				my @color_list = @{Circos::Configuration::make_parameter_list_array($color_conf_str)};
@@ -5595,7 +5975,18 @@ sub create_ideogram_set {
 							next if $rx;
 						}
 						my $match = match_string($idtag,$rx||$key);
-						$ideogram->{color} = $value if $match;
+						if ($match) {
+						    my $color_name;
+						    if ($value =~ /[()]/) {
+							$color_name = lc Circos::Expression::eval_expression({data=>[$ideogram]},
+													     $value,
+													     undef,
+													     -noquote=>1);
+						    } else {
+							$color_name = lc $value;
+						    }
+						    $ideogram->{color} = strip_quotes($color_name);
+						}
 					}
 				}
 	    }
@@ -5670,11 +6061,11 @@ sub refine_display_regions {
       $region->{reject} = Set::IntSpan->new();
     } else {
       if ( $CONF{chromosomes_display_default} ) {
-	  $region->{accept} = $KARYOTYPE->{$chr}{chr}{set};
-	  $region->{reject} = Set::IntSpan->new();
+				$region->{accept} = $KARYOTYPE->{$chr}{chr}{set};
+				$region->{reject} = Set::IntSpan->new();
       } else {
-	  $region->{reject} = Set::IntSpan->new();
-	  $region->{accept} = Set::IntSpan->new();
+				$region->{reject} = Set::IntSpan->new();
+				$region->{accept} = Set::IntSpan->new();
       }
     }
     
@@ -5971,11 +6362,12 @@ sub ribbon {
 																		 perturb_bezier_radius_purity => 0,
 																		 crest                        => 0,
 																		 perturb_crest                => 0,
+																		 svg                          => { type => HASHREF, optional => 1 },
 																		 mapoptions                   => { type => HASHREF, optional => 1 },
 																		}
 																	 );
 	my %params = @_;
-	
+
 	my $perturb = $params{perturb};
 	if ($SVG_MAKE) {
 		my @path;
@@ -5983,7 +6375,7 @@ sub ribbon {
 		my $angle1_end   = getanglepos( $params{end1},   $params{chr1} );
 		my $angle2_start = getanglepos( $params{start2}, $params{chr2} );
 		my $angle2_end   = getanglepos( $params{end2},   $params{chr2} );
-		
+
 		my @bezier_control_points1 = (
 																	bezier_control_points(
 																												pos1                  => $params{end1},
@@ -6002,7 +6394,7 @@ sub ribbon {
 																												perturb_crest => $params{perturb_crest},
 																											 )
 																 );
-		
+
 		my @bezier_control_points2 = (
 																	bezier_control_points(
 																												pos1                  => $params{start2},
@@ -6021,10 +6413,10 @@ sub ribbon {
 																												perturb_crest => $params{perturb_crest},
 																											 )
 																 );
-		
+
 		push @path,
 			sprintf( "M %.3f,%.3f", getxypos( $angle1_start, $params{radius1} ) );
-		
+
 		push @path, sprintf(
 												"A %.3f,%.3f %.2f %d,%d %.1f,%.1f",
 												$params{radius1},
@@ -6034,7 +6426,7 @@ sub ribbon {
 												$angle1_start < $angle1_end,
 												getxypos( $angle1_end, $params{radius1} )
 											 );
-		
+
 		if ( @bezier_control_points1 == 10 ) {
 			my @bezier_points = bezier_points(@bezier_control_points1);
 			my $point_string  = "%.1f,%.1f " x @bezier_points;
@@ -6051,7 +6443,7 @@ sub ribbon {
 				sprintf( "Q %.1f,%.1f %.1f,%.1f",
 								 @bezier_control_points1[ 2 .. @bezier_control_points1 - 1 ] );
 		}
-		
+
 		push @path, sprintf(
 												"A %.3f,%.3f %.2f %d,%d %.1f,%.1f",
 												$params{radius2},
@@ -6061,7 +6453,7 @@ sub ribbon {
 												$angle2_start > $angle2_end,
 												getxypos( $angle2_start, $params{radius2} )
 											 );
-		
+
 		if ( @bezier_control_points2 == 10 ) {
 			my @bezier_points = bezier_points(@bezier_control_points2);
 			my $point_string  = "%.1f,%.1f " x @bezier_points;
@@ -6079,7 +6471,7 @@ sub ribbon {
 								 @bezier_control_points2[ 2 .. @bezier_control_points2 - 1 ] );
 		}
 		push @path, "Z";
-		
+
 		my $svg_colors = $EMPTY_STR;
 		if ( $params{edgecolor} ) {
 			$svg_colors .= sprintf( qq{ stroke: rgb(%d,%d,%d);}, rgb_color( $params{edgecolor} ) );
@@ -6088,113 +6480,114 @@ sub ribbon {
 																rgb_color_opacity( $params{edgecolor} ) );
 			}
 		}
-		
+
 		if ( $params{fillcolor} ) {
 			my $svg_color;
-			if(defined $params{pattern}) {
-			if($params{fillcolor} =~ /,/) {
-		    my @colors = split(",",$params{fillcolor});
-		    (undef,$svg_color) = split(":",$colors[0]);
+			if (defined $params{pattern}) {
+				if ($params{fillcolor} =~ /,/) {
+					my @colors = split(",",$params{fillcolor});
+					(undef,$svg_color) = split(":",$colors[0]);
+				} else {
+					$svg_color = $params{fillcolor};
+				}
 			} else {
-		    $svg_color = $params{fillcolor};
+				$svg_color = $params{fillcolor};
 			}
-		} else {
-			$svg_color = $params{fillcolor};
+			$svg_colors .= sprintf( qq{ fill: rgb(%d,%d,%d);}, rgb_color($svg_color) );
+			if ( rgb_color_opacity( $params{fillcolor} ) < 1 ) {
+				$svg_colors .= sprintf( qq{ opacity: %.3f;},
+																rgb_color_opacity( $params{fillcolor} ) );
+			}
 		}
-		$svg_colors .= sprintf( qq{ fill: rgb(%d,%d,%d);}, rgb_color($svg_color) );
-		if ( rgb_color_opacity( $params{fillcolor} ) < 1 ) {
-			$svg_colors .= sprintf( qq{ opacity: %.3f;},
-															rgb_color_opacity( $params{fillcolor} ) );
-		}
+		
+		my $svg = sprintf( qq{<path d="%s" style="stroke-width: %.1f; %s" %s/>},
+											 join( $SPACE, @path ),
+											 $params{edgestroke}||0, 
+											 $svg_colors,
+											 attr_string($params{svg}{attr}),
+										 );
+		printsvg($svg);
 	}
-	
-	my $svg = sprintf( qq{<path d="%s" style="stroke-width: %.1f; %s"/>},
-										 join( $SPACE, @path ),
-										 $params{edgestroke}||0, 
-										 $svg_colors,
-									 );
-	printsvg($svg);
-}
 
-    if ($PNG_MAKE) {
-			my $poly = GD::Polygon->new;
+	if ($PNG_MAKE) {
+		my $poly = GD::Polygon->new;
+
+		# arc along span 1
+		my @points = arc_points(
+														start  => $params{start1},
+														end    => $params{end1},
+														chr    => $params{chr1},
+														radius => $params{radius1}
+													 );
+		
+		# bezier from span1 to span2
+		push @points, bezier_points(
+																bezier_control_points(
+																											pos1                  => $params{end1},
+																											chr1                  => $params{chr1},
+																											pos2                  => $params{end2},
+																											chr2                  => $params{chr2},
+																											radius1               => $params{radius1},
+																											radius2               => $params{radius2},
+																											bezier_radius         => $params{bezier_radius},
+																											perturb => $perturb,
+																											perturb_bezier_radius => $params{perturb_bezier_radius},
+																											bezier_radius_purity  => $params{bezier_radius_purity},
+																											perturb_bezier_radius_purity => $params{perturb_bezier_radius_purity},
+																											crest         => $params{crest},
+																											perturb_crest => $params{perturb_crest},
+																										 )
+															 );
 			
-			# arc along span 1
-			my @points = arc_points(
-															start  => $params{start1},
-															end    => $params{end1},
-															chr    => $params{chr1},
-															radius => $params{radius1}
-														 );
+		# arc along span 2
+		push @points, arc_points(
+														 start  => $params{end2},
+														 end    => $params{start2},
+														 chr    => $params{chr2},
+														 radius => $params{radius2}
+														);
 			
-			# bezier from span1 to span2
-			push @points, bezier_points(
-																	bezier_control_points(
-																												pos1                  => $params{end1},
-																												chr1                  => $params{chr1},
-																												pos2                  => $params{end2},
-																												chr2                  => $params{chr2},
-																												radius1               => $params{radius1},
-																												radius2               => $params{radius2},
-																												bezier_radius         => $params{bezier_radius},
-																												perturb => $perturb,
-																												perturb_bezier_radius => $params{perturb_bezier_radius},
-																												bezier_radius_purity  => $params{bezier_radius_purity},
-																												perturb_bezier_radius_purity => $params{perturb_bezier_radius_purity},
-																												crest         => $params{crest},
-																												perturb_crest => $params{perturb_crest},
-																											 )
-																 );
-			
-			# arc along span 2
-			push @points, arc_points(
-															 start  => $params{end2},
-															 end    => $params{start2},
-															 chr    => $params{chr2},
-															 radius => $params{radius2}
-															);
-			
-			push @points, bezier_points(
-																	bezier_control_points(
-																												pos1                  => $params{start2},
-																												chr1                  => $params{chr2},
-																												pos2                  => $params{start1},
-																												chr2                  => $params{chr1},
-																												radius1               => $params{radius2},
-																												radius2               => $params{radius1},
-																												bezier_radius         => $params{bezier_radius},
-																												perturb_bezier_radius => $params{perturb_bezier_radius},
-																												perturb               => $perturb,
-																												bezier_radius_purity  => $params{bezier_radius_purity},
-																												perturb_bezier_radius_purity => $params{perturb_bezier_radius_purity},
-																												crest                 => $params{crest},
-																												perturb_crest         => $params{perturb_crest},
-																											 )
-																 );
-			
-			for my $point (@points) {
-				$poly->addPt(@$point);
-			}
-			
-			Circos::PNG::draw_polygon(polygon    => $poly,
-																thickness  => unit_strip($params{edgestroke},"p"),
-																fill_color => $params{fillcolor},
-																pattern    => $params{pattern},
-																color      => $params{edgecolor});
-			
-			# contribute to image map
-			if (defined $params{mapoptions}{url}) {
-				my $xshift = $CONF{image}{image_map_xshift}||0;
-				my $yshift = $CONF{image}{image_map_xshift}||0;
-				my $xmult  = $CONF{image}{image_map_xfactor}||1;
-				my $ymult  = $CONF{image}{image_map_yfactor}||1;
-				my @coords = map { ( $_->[0]*$xmult + $xshift , $_->[1]*$ymult + $yshift ) } $poly->vertices;
-				report_image_map(shape=>"poly",
-												 coords=>\@coords,
-												 href=>$params{mapoptions}{url});
-			}
+		push @points, bezier_points(
+																bezier_control_points(
+																											pos1                  => $params{start2},
+																											chr1                  => $params{chr2},
+																											pos2                  => $params{start1},
+																											chr2                  => $params{chr1},
+																											radius1               => $params{radius2},
+																											radius2               => $params{radius1},
+																											bezier_radius         => $params{bezier_radius},
+																											perturb_bezier_radius => $params{perturb_bezier_radius},
+																											perturb               => $perturb,
+																											bezier_radius_purity  => $params{bezier_radius_purity},
+																											perturb_bezier_radius_purity => $params{perturb_bezier_radius_purity},
+																											crest                 => $params{crest},
+																											perturb_crest         => $params{perturb_crest},
+																										 )
+															 );
+		
+		for my $point (@points) {
+			$poly->addPt(@$point);
+		}
+
+		Circos::PNG::draw_polygon(polygon    => $poly,
+															thickness  => unit_strip($params{edgestroke},"p"),
+															fill_color => $params{fillcolor},
+															pattern    => $params{pattern},
+															color      => $params{edgecolor});
+
+		# contribute to image map
+		if (defined $params{mapoptions}{url}) {
+			my $xshift = $CONF{image}{image_map_xshift}||0;
+			my $yshift = $CONF{image}{image_map_xshift}||0;
+			my $xmult  = $CONF{image}{image_map_xfactor}||1;
+			my $ymult  = $CONF{image}{image_map_yfactor}||1;
+			my @coords = map { ( $_->[0]*$xmult + $xshift , $_->[1]*$ymult + $yshift ) } $poly->vertices;
+			report_image_map(shape=>"poly",
+											 coords=>\@coords,
+											 href=>$params{mapoptions}{url});
 		}
 	}
+}
 
 # Fetch a fill pattern from a file, or if previously fetched, from lookup table.
 sub fetch_fill_pattern {
@@ -6231,7 +6624,7 @@ sub fetch_colored_fill_pattern {
 		#confess "Color maps for ribbon patterns must have the format oldcolor:newcolor[,oldcolor:newcolor,...]";
 		next unless $new;
 		$colormap->{join(",",$IM->rgb(fetch_color($old)))} = $new;
-    }
+	}
 	if (! $IM_TILES_COLORED->{$tile_name}{$color}) {
 		my $tile  = fetch_fill_pattern($tile_name)->clone();
 		for my $x ( 0.. $tile->width ) {
@@ -6278,12 +6671,14 @@ sub slice {
 																		 chr          => 1,
 																		 radius_from  => 1,
 																		 radius_to    => 0,
-																		 radius_to_y0 => 0, 
+																		 radius_to_y0 => 0,
 																		 radius_to_y1 => 0,
 																		 edgecolor    => 1,
 																		 edgestroke   => 1,
 																		 fillcolor    => 0,
+																		 pattern      => 0,
 																		 ideogram     => 0,
+																		 svg          => { type => HASHREF, optional => 1 },
 																		 mapoptions   => { type => HASHREF, optional => 1 },
 																		 guides       => 0,
 																		}
@@ -6291,7 +6686,7 @@ sub slice {
 	my %params = @_;
 	
 	$params{edgestroke} = unit_strip($params{edgestroke});
-	
+
 	start_timer("graphic_slice");
 	
 	start_timer("graphic_slice_preprocess");
@@ -6299,16 +6694,18 @@ sub slice {
 	# used to define an image map element. A slice that appears in the image
 	# must have one of edge color, edge stroke or fill color defined.
 	my $draw_slice = list_has_defined( @params{qw(edgecolor edgestroke fillcolor)} );
-	
-	my ( $start_a, $end_a ) = (getanglepos( $params{start}, $params{chr} ),
-														 getanglepos( $params{end},   $params{chr} ) );
-	
-	if ( $end_a < $start_a ) {
-		( $start_a, $end_a ) = ( $end_a, $start_a );
+
+	my $start_a = getanglepos( $params{start}, $params{chr} ) if defined $params{start};
+	my $end_a   = getanglepos( $params{end},   $params{chr} ) if defined $params{end};
+
+	if(defined $params{start} && defined $params{end}) {
+		if ( $end_a < $start_a ) {
+			( $start_a, $end_a ) = ( $end_a, $start_a );
+		}
 	}
-	
+
 	# The offsets are used to accomodate scales for very short ideograms
-	# where individual base positions need to be identified. It allows 
+	# where individual base positions need to be identified. It allows
 	# elements with start=end to be drawn without collapsing into a very
 	# thin slice, where start/end angles are the same.
 	my @offsets;
@@ -6318,12 +6715,18 @@ sub slice {
 		@offsets = (0,0);
 	}
 	if (@offsets) {
-		$params{start_offset} = $offsets[0] if !defined $params{start_offset};
-		$params{end_offset}   = $offsets[1] if !defined $params{end_offset};
-		$start_a -= $GCIRCUM360 * $params{start_offset};
-		$end_a   += $GCIRCUM360 * $params{end_offset};
+		$params{start_offset} = $offsets[0] if ! defined $params{start_offset};
+		$params{end_offset}   = $offsets[1] if ! defined $params{end_offset};
+		if(defined $params{start}) {
+			$start_a -= $GCIRCUM360 * $params{start_offset};
+		}
+		if(defined $params{end}) {
+			$end_a   += $GCIRCUM360 * $params{end_offset};
+		}
+		$start_a = $end_a   if ! defined $params{start};
+		$end_a   = $start_a if ! defined $params{end};
 	}
-	
+
 	my $angle_orientation = $CONF{image}{angle_orientation} || $EMPTY_STR;
 	if ( $angle_orientation eq 'counterclockwise' ) {
 		( $start_a, $end_a ) = ( $end_a, $start_a ) if $end_a < $start_a;
@@ -6334,8 +6737,7 @@ sub slice {
 	
 	start_timer("graphic_slice_polygon_coord");
 	my $poly;
-	if ( (defined $params{radius_to_y0} &&
-				defined $params{radius_to_y1})
+	if ( (defined $params{radius_to_y0} && defined $params{radius_to_y1})
 			 ||
 			 $params{radius_from} != $params{radius_to} ) {
 		$poly = GD::Polygon->new;
@@ -6357,9 +6759,13 @@ sub slice {
 			 ||
 			 $params{radius_from} != $params{radius_to}) {
 		( $xp, $yp ) = ( 0,0 );
-		if(defined $params{radius_to_y0} && defined $params{radius_to_y1}) {
-			$poly->addPt(getxypos( $end_a, $params{radius_to_y1}));
-			$poly->addPt(getxypos( $start_a, $params{radius_to_y0}));
+		if (defined $params{radius_to_y0} && defined $params{radius_to_y1}) {
+			my ($ry0,$ry1) = @params{qw(radius_to_y0 radius_to_y1)};
+			if ($angle_orientation =~ /counter/) {
+				($ry0,$ry1) = ($ry1,$ry0);
+			}
+			$poly->addPt(getxypos( $end_a,   $ry1));
+			$poly->addPt(getxypos( $start_a, $ry0));
 		} else {
 			for ( my $angle = $end_a; $angle > $start_a; $angle -= $CONF{anglestep} ) {
 				( $x, $y ) = getxypos( $angle, $params{radius_to} );
@@ -6372,21 +6778,25 @@ sub slice {
 		}
 	}
 	stop_timer("graphic_slice_polygon_coord");
-	
-	if($draw_slice) {
-		if($SVG_MAKE) {
+
+	if ($draw_slice) {
+		if ($SVG_MAKE) {
 			start_timer("graphic_slice_polygon_svg");
 			Circos::SVG::draw_slice(%params,
-															start_a => $start_a,
-															end_a   => $end_a,
-															angle_orientation => $angle_orientation);
+															start_a           => $start_a,
+															end_a             => $end_a,
+															pattern           => $params{pattern},
+															angle_orientation => $angle_orientation,
+															attr              => $params{svg}{attr},
+														 );
 			stop_timer("graphic_slice_polygon_svg");
 		}
-		if($PNG_MAKE) {
+		if ($PNG_MAKE) {
 			start_timer("graphic_png_polygon");
 			Circos::PNG::draw_polygon(polygon    => $poly,
 																thickness  => unit_strip($params{edgestroke},"p"),
 																fill_color => $params{fillcolor},
+																pattern    => $params{pattern},
 																color      => $params{edgecolor});
 			stop_timer("graphic_png_polygon");	    
 		}
@@ -6428,7 +6838,6 @@ sub report_image_map {
 														$href,
 														$href,
 														$href);
-	
   push @MAP_ELEMENTS, {string=>$map_string,
 											 type=>$args{shape},
 											 coords=>$args{coords}};
@@ -6437,10 +6846,8 @@ sub report_image_map {
 # -------------------------------------------------------------------
 sub myarc {
   my ( $im, $c, $radius, $a1, $a2, $color ) = @_;
-	
-  my $astep = 0.1 / $radius * 180 / $PI;
+	my $astep = 0.1 / $radius * 180 / $PI;
   $astep    = max( 0.01, $astep );
-
   for ( my $a = $a1 ; $a <= $a2 ; $a += $astep ) {
     $im->setPixel( getxypos( $a, $radius ), $color ) if $PNG_MAKE;
   }
@@ -6517,7 +6924,7 @@ sub get_ideogram_idx {
 sub get_ideogram_by_idx {
   my $idx = shift;
   return unless defined $idx;
-	if(my $ideogram = $IDEOGRAMS_LOOKUP{idx}{$idx}) {
+	if (my $ideogram = $IDEOGRAMS_LOOKUP{idx}{$idx}) {
 		return $ideogram;
 	}
   my ($ideogram) = grep( defined $_->{idx} && $_->{idx} == $idx, @IDEOGRAMS );
@@ -6532,15 +6939,15 @@ sub get_ideogram_by_idx {
 sub get_ideograms_by_name {
   my $name = shift;
   return unless defined $name;
-	if(exists $IDEOGRAMS_LOOKUP{name}{$name}) {
+	if (exists $IDEOGRAMS_LOOKUP{name}{$name}) {
 		return $IDEOGRAMS_LOOKUP{name}{$name};
 	}
   my @ideograms = grep( defined $_->{chr} && $_->{chr} eq $name, @IDEOGRAMS );
-	if(@ideograms) {
+	if (@ideograms) {
 		return $IDEOGRAMS_LOOKUP{name}{$name} = \@ideograms;
 	} else {
 		# return an error if this ideogram is not part of the karyotype
-		if(! $KARYOTYPE->{$name} ) {
+		if (! $KARYOTYPE->{$name} ) {
 			fatal_error("ideogram","no_such_name",$name);
 		}
 		return;
@@ -6667,21 +7074,18 @@ sub gettack {
 
 # -------------------------------------------------------------------
 sub show_element {
-  #
-  # returns true only if
-  #  show parameter is not defined
-  #  show parameter is defined and true
-  #  hide parameter is not defined
-  #  hide parameter is defined by false
-  #
-
-  my $param = shift;
-  croak "input parameter is not a hash reference" unless ref($param) eq "HASH";
-
-  # the presence of "hide" overrides any value of "show"
-  return 0 if $param->{hide};
-  return 1 if !exists $param->{show} || $param->{show};
-  return 0;
+	# returns true only if
+	#  show parameter is not defined
+	#  show parameter is defined and true
+	#  hide parameter is not defined
+	#  hide parameter is defined by false
+    
+	my $param = shift;
+	confess "input parameter is not a hash reference" unless ref($param) eq "HASH";
+	# the presence of "hide" overrides any value of "show"
+	return 0 if $param->{hide};
+	return 1 if !exists $param->{show} || $param->{show};
+	return 0;
 }
 
 # -------------------------------------------------------------------
@@ -6726,11 +7130,11 @@ L<http://groups.google.com/group/circos-data-visualization>
 
 Circos documentation is available at
 
-L<http://mkweb.bcgsc.ca/circos/tutorials/lessons>
+L<http://www.circos.ca/documentation/tutorials>
 
 in the form of tutorials. For a more pedagogical approach, see the Circos course materials at
 
-L<http://mkweb.bcgsc.ca/circos/tutorials/course>
+L<http://www.circos.ca/documentation/course>
 
 =head1 ACKNOWLEDGEMENTS
 
@@ -6776,7 +7180,7 @@ http://genopix.sourceforget.net
 
 =head1 COPYRIGHT & LICENSE
 
-Copyright 2004-2013 Martin Krzywinski, all rights reserved.
+Copyright 2004-2014 Martin Krzywinski, all rights reserved.
 
 This file is part of the Genome Sciences Centre Perl code base.
 

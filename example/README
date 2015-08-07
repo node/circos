@@ -5,6 +5,12 @@ including some advanced such as track automation. Use this example to
 verify that your installation is working and as an introduction to the
 configuration file syntax.
 
+*** Don't use this configuration file as a template for
+*** your projects if you are new to Circos. Instead, use the 
+*** Quick Start tutorial and refer to the Best Practices
+***
+*** http://www.circos.ca/tutorials/lessons/quick_start
+
 Use the online tutorials (see below) to learn about configuration syntax.
 
 To create the image, execute the 'run' script (UNIX)

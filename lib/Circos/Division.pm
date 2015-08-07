@@ -109,37 +109,36 @@ sub make_divisions {
 	for my $block (make_list($blocks)) {
 		my @pp      = ($block, @$param_path);
 		next if hide(@pp);
-		
+
 		# positions to skip
-		my @skip    = parse_position( seek_parameter("position_skip",@pp), \@pp, $min, $max);
+		my @skip    = parse_position( seek_parameter("position_skip",@pp),\@pp,$min,$max);
 		my %skip    = map { $_=>1 } @skip;
-		
+
 		# specific positions
-		my @pos     = parse_position( seek_parameter("position",     @pp), \@pp, $min, $max);
-		
-		# positions determined with fixed spacing
+		my @pos     = parse_position( seek_parameter("position",@pp),\@pp,$min,$max);
+		# positions determined with fixed or relative spacing
 		my $spacing = parse_value(seek_parameter("spacing",@pp),$max-$min);
-		
+
 		# optional y start/end values
 		my $ystart = parse_value(seek_parameter("y0",@pp),$min,$max);
 		my $yend   = parse_value(seek_parameter("y1",@pp),$min,$max);
 		$ystart = $min if ! defined $ystart || $ystart < $min;
 		$yend   = $max if ! defined $yend || $yend > $max;
-		
+
 		$block->{spacing} = $spacing;
 		my @posauto = parse_spacing( $spacing , \@pp, $min, $max);
-		
+		my $TOL = ($spacing||0)/1000; # float roundoff causes problems without TOL
 		for my $pos (sort {$a <=> $b} uniq (@pos,@posauto)) {
-			my $skip =  $skip{$pos} || $pos < $ystart || $pos > $yend;
+			my $skip =  $skip{$pos} || $pos < $ystart - $TOL || $pos > $yend + $TOL;
 			printdebug_group("axis","line", $skip?" ":"+",$spacing,$pos,$block->{color});
 			next if $skip;
 	    push @{$divisions->{$spacing || 0}{$pos}}, $block;
 		}
 	}
-	
+
 	my $sorted_divisions = [];
 	my $seen_division;
-	
+
 	for my $spacing (sort {$b <=> $a} keys %$divisions) {
 		for my $pos (sort {$a <=> $b} keys %{$divisions->{$spacing}}) {
 	    # if this division is generated with non-zero spacing (i.e. automatic)
@@ -150,7 +149,7 @@ sub make_divisions {
 																	pos     => $pos,
 																	block   => $divisions->{$spacing}{$pos}[0]};
 		}
-	}    
+	}
 	# division blocks
 	return $sorted_divisions;
 }
@@ -169,6 +168,7 @@ sub parse_position {
 sub parse_spacing {
 	my ($str,$pp,$min,$max) = @_;
 	return unless defined $str;
+
 	my $spacing = parse_value($str,$max-$min);
 
 	if((my $num_axes = ($max-$min) / $spacing) > 1000) {
@@ -182,9 +182,10 @@ sub parse_spacing {
 	$yend      = parse_value($yend,  $max-$min);
 
 	my @ypos;
-	for (my $y = $min; $y <= $max; $y += $spacing) {
-		next if $y < $ystart;
-		last if $y > $yend;
+	my $TOL = $spacing/1000; # float roundoff causes problems without TOL
+	for (my $y = $min; $y <= $max + $TOL; $y += $spacing) {
+		next if $y < $ystart - $TOL;
+		last if $y > $yend + $TOL;
 		push @ypos, $y;
 	}
 	return @ypos;

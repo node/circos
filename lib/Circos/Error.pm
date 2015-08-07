@@ -68,7 +68,9 @@ $ERROR{color} =
     bad_alpha => "Alpha value of [%s] cannot be used. Please use a range 0-1, where 0 is opaque and 1 is transparent.",
     malformed_hsv => "HSV definition [%s] is not in the correct format. You must use\n h,s,v = 60,1,0.5\nor\n h,s,v,a = 0,1,0.5,100\nwhere a is the alpha channel (0-127), h is the hue (0-360), s is saturation (0-1) and v is the value (0-1).",
     malformed_rgb => "RGB definition [%s] is not in the correct format. You must use\n r,g,b = 60,120,180\nor\n r,g,b,a = 60,120,180,100\nwhere a is the alpha channel (0-127), and r,g,b is in the range 0-255.",
+    malformed_lch => "LCH definition [%s] is not in the correct format. You must use\n l,c,h = 60,50,180\nor\n l,c,h,a = 60,50,180,100\nwhere a is the alpha channel (0-127), and l,c is in the range 0 about 100 and h in the range 0 to 360.",
     bad_rgb_lookup => "Could not find a color with RGB value %d,%d,%d.",
+ undef_value=>"Tried to apply color function [%s] to an undefined value",
 };
 
 $ERROR{ideogram} =
@@ -120,17 +122,20 @@ $ERROR{pattern} =
 
 $ERROR{configuration} = 
   {
-	 no_such_conf_item => "You attempted to reference a configuration parameter using %s, but no parameter was found at the configuration file position %s",
+	 no_debug_group=>"You asked for debug group [%s] using -debug_group. This group is not defined. Please use one of\n\n[%s]\n\nTo request all groups, use -debug_group _all.",
+	 deprecated =>"The configuration syntax [%s] is deprecated and no longer supported. Instead, use [%s].",
+	 no_such_conf_item => "You attempted to reference a configuration parameter using %s, but no parameter was found at the configuration file position %s.\n\nTo reference a parameter in another block, provide the full block path, such as conf(ideogram,spacing,default). In general, conf(block1,block2,...,blockn,parameter).\n\nTo reference the first defined parameter above the block in which conf() is called, use conf(.,parameter).",
    no_housekeeping => "You did not include the etc/housekeeping.conf file in your configuration file. This file contains many important system parameters and must be included in each Circos configuration.\n\nTo do so, use\n\n  <<include etc/housekeeping.conf>>\n\nin your main configuration file. For an example, see\n\n  http://www.circos.ca/documentation/tutorials/quick_guide/hello_world/configuration\n\nIf you have made other provisions to include these parameters, make sure you have\n\n  housekeeping = yes\n\ndefined to skip this check.",
    multi_word_key => "Your parameter [%s] contains a white space. This is not allowed. You either forgot a '=' in assignment (e.g. 'red 255,0,0' vs 'red = 255,0,0') or used a multi-word parameter name\n (e.g. 'my red = 255,0,0' vs 'my_red = 255,0,0'",
    missing => "file(error/configuration.missing.txt)",
    bad_parameter_type => "You attempted to reference a configuration parameter group with name [%s], but it is not defined",
    defined_twice => "Parameter [%s] of type [%s] is defined twice. Some parameters can have multiple values, but not this one.",
-   multiple_defn_in_list => "Configuration value [%s] defines parameter [%s] more than once. This is not allowed.",
+   multiple_defn_in_list => "Configuration value [%s] defines parameter [%s] more than once. This is not allowed. If you want to override a parameter included from a file, use * suffix (e.g. file* = myfile.png)",
    multivalue => "Configuration parameter [%s] in parent block [%s] has been defined more than once in the block shown above, and has been interpreted as a list. This is not allowed. Did you forget to comment out an old value of the parameter?",
    unsupported_parameter => "Parameter [%s] of type [%s] is not supported.",
    bad_pointer => "Problem with variable lookup in configuration file. You referenced variable [%s] (seen as %s) in another parameter, but this variable is not defined.",
    no_karyotype => "You did not define a karyotype file. Are you sure your configuration file is well formed?",
+   no_block => "You did not define an <%s> block in the configuration file.",
 	 no_counter => "No such counter [%s]",
 	 cannot_find_include => "Error parsing the configuration file. You used an <<include FILE>> directive, but the FILE could not be found. This FILE is interpreted relative to the configuration file in which the <<include>> directive is used. Circos lookd for the file in these directories\n\n%s\n\nThe Config::General module reported the error\n\n%s",
 	 cannot_parse_file => "Error parsing the configuration file. The Config::General module reported the error\n\n%s",
@@ -138,6 +143,7 @@ $ERROR{configuration} =
 	 parampath_missing => "You tried to set the parameter [%s] to value [%s] using -param, but the block [%s] does not exist in the configuration file.",
 	 parampath_nothash => "You tried to set the parameter [%s] to value [%s] using -param, but the block [%s] is not unique.",
 	 undefined_parameter => "The required parameter [%s] for [%s] block was not defined",
+	 undefined_string => "Could not parse value for configuration parameter [%s] in block [%s]. The location in the configuration is shown above.",
   };
 
 $ERROR{font} = 
@@ -193,13 +199,15 @@ $ERROR{io} =
     cannot_write => "Cannot open file [%s] for writing %s. Make sure that the directory for this file exists (Circos will not create directories) and is writeable. (error %s)",
     cannot_read => "Cannot read file [%s] for reading %s. (error %s)",
     cannot_find => "Cannot guess the location of file [%s]. Tried to look in the following directories\n%s",
+    no_directory => "Cannot find the directory [%s] for writing %s.",
 };
 
 $ERROR{parsedata} =
 	{
-	 bad_options => "Error parsing data point options. Saw parameter assignment [%s] but expected it to be in the format x=y.",
-	 bad_csv     => "Could not parse comma-delimited list [%s] because of unbalanced parentheses [%d]. Correct syntax is x=(1,2),y=3, which is split along the second comma to x=(1,2) and y=3.",
+	 bad_options => "Error parsing data point options. Saw parameter assignment [%s] but expected it to be in the format x=y. Make sure that you're not using a data file with values for a track that does not require values.",
+	 bad_csv     => "Could not parse comma-delimited list [%s] because of unbalanced parentheses [%d]. Correct syntax is x=(1,2),y=3, which is split along the second comma to x=(1,2) and y=3. If you do not use parentheses, the last item in the list will be considered as a parameter, e.g. x=a,b,c=2 is parsed as x=a,b c=2.",
 	 bad_field_format => "The field [%s] did not have the expected format. The value [%s] was expected to be a [%s]. This was seen in file [%s] on line\n\n%s",
+	 bad_field_count => "The line\n\n%s\n\nfrom file\n\n%s\n\nfor a track of type [%s] did not have the expected number of fields, which for this track type are\n\n%s",
 	 no_such_re => "You tried to test the number [%s] with a number regular expression of type [%s] but this type is not defined. Regexp::Common module returned error [%s]",
 	 bad_number => "The number [%s] did not match expected type [%s].",
 	 bad_number_range => "The number [%s] of type [%s] falls outside of allowable range [ %s-%s ].",
@@ -208,8 +216,22 @@ $ERROR{parsedata} =
  
 $ERROR{warning} =
 {
-    general => "%s",
-    paranoid => "Circos produced a warning and quit because you are running it in paranoid mode. The warning does not nececessarily mean that something is wrong - Circos was likely trying to guess a parameter or massage data to fit the figure.\nTo change this setting, use -noparanoid flag or change the 'paranoid' parameter in etc/housekeeping.conf to 'paranoid=no'.",
+ general => "%s",
+ data_range_exceeded => "Data point of type [%s] [%s] extended past end of ideogram [%s %s]. This data point will be [%s].",
+ track_has_no_file => "Track id [%s] of type [%s] has no file definition. This is alright if you're using the track for side-effects like axes and backgrounds.",
+ track_has_no_type => "Track id [%s] has no type definition. This is alright if you're using the track for side-effects like axes and backgrounds.",
+ paranoid => "Circos produced a warning and quit because you are running it in paranoid mode. The warning does not nececessarily mean that something is wrong - Circos was likely trying to guess a parameter or massage data to fit the figure.\nTo change this setting, use -noparanoid flag or change the 'paranoid' parameter in etc/housekeeping.conf to 'paranoid=no'.",
+};
+
+$ERROR{heatmap} =
+{
+ rescale_boundary_bad_fmt => "Could not parse the color mapping boundary string [%s]. The format is x1:z1,x2:z2,... where xi is the position desired for color index zi.",
+ rescale_boundary_bad_value => "The the color mapping boundary value [%s] is not an integer.",
+ rescale_boundary_bad_position => "The the color mapping boundary position [%s] is not a number.",
+ rescale_boundary_value_out_of_bounds => "You asked to rescale the color mapping to center color index [%d] on value [%f]. The index is out of range -- you only have [%d] colors to pick from. Set the color index to be in the range [0-%d]",
+ rescale_boundary_position_out_of_bounds => "The color mapping boundary [%f] is beyond the range of plot value range [%f,%f]",
+ rescale_boundary_value_not_increasing => "Your color mapping boundaries do not specify increasing color index. Saw successive values of [%d] and [%d].",
+ rescale_boundary_position_not_increasing => "Your color mapping boundaries do not specify increasing positions. Saw successive positions of [%d] and [%d].",
 };
 
 $ERROR{track} =
@@ -247,11 +269,12 @@ $ERROR{map} =
 
 $ERROR{data} =
 {
+    data_range_exceeded => "Data point of type [%s] [%s] extended past end of ideogram [%s %s]. You've set data_out_of_range=fatal, so Circos is quitting. See etc/housekeeping.conf for other options of this parameter.",
     bad_karyotype_format => "Could not parse line from karyotype file [%s].",
-    bad_karyotype_band_format => "Could not parse band line from karyotype file. The line\n\n  %s\n\nis missing fields. The correct format is\n\n  band chr_name band_name band_label start end color\n",
+    bad_karyotype_format => "Could not parse line from karyotype file. The line\n\n  %s\n\nis missing fields. The correct format is\n\n  chr - chr_name chr_label start end color options\n\nfor chromosomes and\n\n  band chr_name band_name band_label start end color options\n\nfor cytogenetic bands. Please see data/karyotype in the distribution for examples.",
     malformed_span => "There was a problem initializing a span. Saw start [%s] > end [%s].",
     repeated_chr_in_karyotype => "Chromosome [%s] defined more than once in karyotype file.",
-    malformed_karyotype_coordinates => "Start [%s] and/or end [%s] coordinate in karyotype file are not digits.",
+    malformed_karyotype_coordinates => "Start [%s] and/or end [%s] coordinate in karyotype file don't appear to be numbers. Thousands separators , and _ are allowed, but not any other characters.",
     unknown_karyotype_line => "You have a line starting with field [%s] in the karyotype file but currently only 'chr' or 'band' lines are supported.\n\n%s",
     inconsistent_karyotype_coordinates => "Start [%s] must be smaller than end [%s] coordinate in karyotype file.",
     band_on_missing_chr => "Bands for chromosome [%s] are defined but the chromosome itself has no definition.\nIs there a 'chr' line for this chromosome in the karyotype file?",
@@ -261,7 +284,9 @@ $ERROR{data} =
 
 $ERROR{ticks} =
 	{
-	 too_many => "You are trying to draw [%s] ticks on ideogram [%s]. This is a lot of ticks and will take a very long time. Make sure that chromosomes_units parameter is set and read this tutorial\n\nhttp://www.circos.ca/documentation/tutorials/ticks_and_labels/basics/\n\nTo change the maximum tick number, adjust 'max_ticks' in etc/housekeeping.conf",
+	 bad_suffix => "You used the suffix [%s] in the string [%s]. This suffix is not defined. Use one of K, G, M, or T (or Kb, Gb, Mb, Tb)",
+	 unparsable => "The string [%s] cannot be parsed into a numerical quantity.",
+	 too_many   => "You are trying to draw [%s] ticks on ideogram [%s]. This is a lot of ticks and will take a very long time. Make sure that chromosomes_units parameter is set and read this tutorial\n\nhttp://www.circos.ca/documentation/tutorials/ticks_and_labels/basics/\n\nTo change the maximum tick number, adjust 'max_ticks' in etc/housekeeping.conf",
 };
 
 $ERROR{function} =
@@ -291,61 +316,100 @@ $ERROR{system} =
 
 $ERROR{support} =
 {
-    googlegroup=>"If you are having trouble debugging this error, use this tutorial to learn how to use the debugging facility\n http://www.circos.ca/tutorials/lessons/configuration/debugging\nIf you're still stumped, get support in the Circos Google Group\n  http://groups.google.com/group/circos-data-visualization",
+    googlegroup=>"If you are having trouble debugging this error, first read the best practices tutorial for helpful tips that address many common problems\n http://www.circos.ca/documentation/tutorials/reference/best_practices\nThe debugging facility is helpful to figure out what's happening under the hood\n http://www.circos.ca/documentation/tutorials/configuration/debugging\nIf you're still stumped, get support in the Circos Google Group\n http://groups.google.com/group/circos-data-visualization",
 };
 
 sub error {
     my ($cat,$errorid,@args) = @_;
     my $error_text = $ERROR{$cat}{$errorid};
     if(! defined $error_text) {
-	fatal_error("system","bad_error_name",$cat,$errorid);
+			fatal_error("system","bad_error_name",$cat,$errorid);
     }
     if($error_text =~ /file\((.*)\)/) {
-	my $file = Circos::Utils::locate_file(file=>$1,name=>"error file",return_undef=>1);
-	if($file && open(F,$file)) {
-	    $error_text = join("",<F>);
-	    close(F);
-	} else {
-	    $error_text = "...error text from [$1] could not be read...";
-	}
+			my $file = Circos::Utils::locate_file(file=>$1,name=>"error file",return_undef=>1);
+			if($file && open(F,$file)) {
+				$error_text = join("",<F>);
+				close(F);
+			} else {
+				$error_text = "...error text from [$1] could not be read...";
+			}
     }
     my (@text,$format);
     my $undef_text = Circos::Configuration::fetch_conf("debug_undef_text") || "_undef_";
     @args = map { defined $_ ? $_ : $undef_text } @args;
     if($cat eq "warning") {
-	if(Circos::Configuration::fetch_conf("paranoid")) {
-	    @text = ("*** CIRCOS WARNING ***",
-		     $GROUPERROR{$cat} ? uc $GROUPERROR{$cat} : $EMPTY_STR,
-		     sprintf($error_text,@args));
-	    $format = 1;
-	} else {
-	    printdebug_group("!circoswarning",uc $GROUPERROR{$cat},sprintf($error_text,@args));
-	    return;
-	}
+			if(Circos::Configuration::fetch_conf("paranoid")) {
+				@text = ("WARNING *** "
+								 .
+								 ($GROUPERROR{$cat} ? uc $GROUPERROR{$cat} : $EMPTY_STR)
+								 .
+								 sprintf($error_text,@args));
+				#$format = 1;
+			} else {
+				printdebug_group("!circoswarning",uc $GROUPERROR{$cat},sprintf($error_text,@args));
+				return;
+			}
     } else {
-	@text = ("*** CIRCOS ERROR ***",
-		 $GROUPERROR{$cat} ? uc $GROUPERROR{$cat} : $EMPTY_STR,
-		 sprintf($error_text,@args),
-		 $ERROR{support}{googlegroup},
-		 "",
-		 "Stack trace:",
-	    );
-	$format = 1;
+			@text = ("*** CIRCOS ERROR ***",
+							 $GROUPERROR{$cat} ? uc $GROUPERROR{$cat} : $EMPTY_STR,
+							 sprintf($error_text,@args),
+							 $ERROR{support}{googlegroup},
+							 "",
+							 "Stack trace:",
+							);
+			$format = 1;
     }
     if($format) {
-	my @text_fmt;
-	for my $t (@text) {
-	    for my $line (split(/\n/, $t)) {
-		if ($line =~ /^\s/) {
-		    push @text_fmt, Text::Format->new({leftMargin=>6,columns=>80,firstIndent=>0})->paragraphs($line);
-		} else {
-		    push @text_fmt, Text::Format->new({leftMargin=>2,columns=>80,firstIndent=>0})->paragraphs($line);
+			my @text_fmt;
+			for my $t (@text) {
+				for my $line (split(/\n/, $t)) {
+					if ($line =~ /^\s/) {
+						push @text_fmt, Text::Format->new({leftMargin=>6,columns=>80,firstIndent=>0})->paragraphs($line);
+					} else {
+						push @text_fmt, Text::Format->new({leftMargin=>2,columns=>80,firstIndent=>0})->paragraphs($line);
+					}
+				}
+			}
+			print "\n" . join("\n", @text_fmt);
+    } else {
+			print join(" ",@text)."\n";
+    }
+	}
+
+sub fake_error {
+    my $error_path = shift;
+    # fake an error, if we must
+    my ($cat,$name) = split($COMMA,$error_path);
+    if(! $cat && ! $name) {
+	printinfo("The following error categories and IDs are available.");
+	for my $cat (sort keys %ERROR) {
+	    printinfo($cat);
+	    for my $name (sort keys %{$ERROR{$cat}}) {
+		printinfo(" ",$name);
+	    }
+	}
+	exit;
+    } elsif (! $name) {
+	printinfo("The following errors are available for category [$cat]");
+	for my $name (sort keys %{$ERROR{$cat}}) {
+	    printinfo(" ",$name);
+	}
+	exit;	
+    } elsif (! $cat) {
+	my $found;
+	printinfo("The following categories contain the error ID [$name]");
+	for my $thiscat (sort keys %ERROR) {
+	    for my $thisname (sort keys %{$ERROR{$thiscat}}) {
+		if($name eq $thisname) {
+		    printinfo($thiscat,$name);
+		    $found = 1;
 		}
 	    }
 	}
-	print "\n" . join("\n", @text_fmt);
+	printinfo("Could not find error name [$name] in any error category") if ! $found;
+	exit;
     } else {
-	print join(" ",@text)."\n";
+	fatal_error($cat,$name, map { 0 } (1..10) );
     }
 }
 
