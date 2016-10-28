@@ -14,8 +14,6 @@ Community
 And some Chinese community: 
 
 * 中文文档  https://github.com/node/circos-cn
-* 豆瓣小组  http://www.douban.com/group/circos/ 
-* SegmentFault  http://segmentfault.com/t/circos 
 * QQ群 ：  171307056  
 
 License
