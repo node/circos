@@ -41,7 +41,7 @@ our @EXPORT    = qw(
 										 get_counter
 										 exists_counter
 										 dump_config
-parse_conf_fn
+										 parse_conf_fn
 										 %CONF
 										 $DIMS
 									);
@@ -794,7 +794,7 @@ sub loadconfiguration {
   }
 
   if ( !$file ) {
-    fatal_error("configuration","missing");
+    fatal_error("configuration","missing",$arg);
   }
 
   my @configpath = (

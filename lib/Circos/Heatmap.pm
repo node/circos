@@ -72,7 +72,7 @@ sub report_mapping {
 										 defined $item->{max_remap} && defined $item->{min_remap} ? sprintf("%4.1f",$item->{max_remap}-$item->{min_remap}) : " inf",
 										 sprintf("%2d",$item->{i}),
 										 $item->{value},
-										 join(",",rgb_color($item->{value})||$EMPTY_STR));
+										 join(",",rgb_color($item->{value})));
 	}
 }
 

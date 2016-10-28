@@ -1141,7 +1141,7 @@ Fixed a bug with highlights that was drawing them multiple times for cropped ide
 
 <highlight> blocks can now have <rules>
 
-<ideogram> block can now have rules that apply formatting to each ideogram
+<ideogram> block can now have rules that apply formatting to each ideogram.
 
 Fixed a bug that was not drawing ticks when show_label=no.
 
@@ -1198,3 +1198,74 @@ Baseline and font size shifts are defined in etc/housekeeping.conf using sub_bas
 16 Mar 2015 v0.67-7
 
 Fixed a color bug that was ignoring transparency values in color definitions in data files.
+
+17 Mar 2015 v0.67-8
+
+Added current directory and command to error reporting. 
+
+Added specific error report for undefined and ambiguous options.
+
+7 Apr 2015 v0.68-pre1
+
+Fixed a bug that was preventing background to be drawn in SVG files.
+
+10 Jul 2015 v0.68-pre2
+
+Fixed a bug that was introduced in the previous release that broke abbreviation of command-line flags.
+
+16 Nov 2015 v0.68-1
+
+Fixed axis spacing bug that was causing an infinite loop when min=max and spacing was relative.
+
+Fixed a bug in tick filtering which was unnecessarily looping over ticks that were filtered out entirely from an ideogram.
+
+25 Nov 2015 v0.69
+
+The name of the symbols font has been changed from Symbols-Roman to CircosSymbols. See fonts/symbols
+
+Fixed SVG regular expression that was creating a warning due to unmatched {. Now { need to be escaped or used as a character class [{] [}].
+
+Nested calls to var() in rules are now possible. For example,
+
+  <rule>
+  ... 
+  type = a
+  </rule>
+  <rule>
+  ...
+  value = var(var(type)) # calls var(a)
+  </rule>
+
+Stacked histograms can now be normalized using
+
+  normalize_bin_values = yes
+
+which can be used in combination with
+
+  sort_bin_values      = yes
+
+To have a track plotted inside an ideogram (useful for highlights) use
+
+  inside_ideogram = yes
+
+  # equivalent to
+  r0 = dims(ideogram,radius_inner)
+  r1 = dims(ideogram,radius_outer)
+
+  
+25 Feb 2016 v0.69-1
+
+Fixed an error that was causing issues in parsing SVG parameters in a connector track.
+
+30 Mar 2016 v0.69-2
+
+Fixed a bug in the output of the heatmap legend that was breaking how RGB values of a color were shown.
+
+24 Jun 2016 v0.69-3
+
+Added a commented chrM to data/karyotype/karyotype.human.hg38.txt to complement the chrM band definition to fix a bug that was preventing the file from being parsed. Note that both chr and band definitions for chrM are commented out, since most figures will not require this chromosome.
+
+Fixed text track so that r0 can be changed using rules.
+
+
+

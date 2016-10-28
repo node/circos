@@ -243,8 +243,8 @@ sub draw_text {
 	$svg_text =~ s/\^([^{])/$sup_open$1$sup_close/g;
 
 	# group bounded by { }
-	$svg_text =~ s/_{([^}]+)}/$sub_open$1$sub_close/g;
-	$svg_text =~ s/\^{([^}]+)}/$sup_open$1$sup_close/g;
+	$svg_text =~ s/_[{]([^}]+)}/$sub_open$1$sub_close/g;
+	$svg_text =~ s/\^[{]([^}]+)}/$sup_open$1$sup_close/g;
 
 	my $style = style(thickness  => $params{thickness},
 										fill_color => $params{color},

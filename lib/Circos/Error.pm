@@ -39,6 +39,7 @@ error
 fatal_error
 );
 
+use Cwd;
 use Carp qw( carp confess croak );
 use Params::Validate;
 use Text::Format;
@@ -122,6 +123,7 @@ $ERROR{pattern} =
 
 $ERROR{configuration} = 
   {
+		bad_command_line_options=>"Some of the command-line options you provided [%s] are either unknown or ambiguous.",
 	 no_debug_group=>"You asked for debug group [%s] using -debug_group. This group is not defined. Please use one of\n\n[%s]\n\nTo request all groups, use -debug_group _all.",
 	 deprecated =>"The configuration syntax [%s] is deprecated and no longer supported. Instead, use [%s].",
 	 no_such_conf_item => "You attempted to reference a configuration parameter using %s, but no parameter was found at the configuration file position %s.\n\nTo reference a parameter in another block, provide the full block path, such as conf(ideogram,spacing,default). In general, conf(block1,block2,...,blockn,parameter).\n\nTo reference the first defined parameter above the block in which conf() is called, use conf(.,parameter).",
@@ -244,6 +246,7 @@ $ERROR{track} =
  no_file => "You must specify a file for a track. The offending track had type [%s] and id [%s]\n\n %s",
  duplicate_names => "Multiple track blocks with name [%s] are defined. This is not supported.",
  too_many_axes => "You asked for an axis with spacing [%s]. This would result in a very large number [%d] of axes. Is this what you want?",
+ division => "Cannot divide 0-sized chromosome region [%d,%d] for ticks [%s].",
 };
 
 $ERROR{links} = 
@@ -316,7 +319,7 @@ $ERROR{system} =
 
 $ERROR{support} =
 {
-    googlegroup=>"If you are having trouble debugging this error, first read the best practices tutorial for helpful tips that address many common problems\n http://www.circos.ca/documentation/tutorials/reference/best_practices\nThe debugging facility is helpful to figure out what's happening under the hood\n http://www.circos.ca/documentation/tutorials/configuration/debugging\nIf you're still stumped, get support in the Circos Google Group\n http://groups.google.com/group/circos-data-visualization",
+    googlegroup=>"If you are having trouble debugging this error, first read the best practices tutorial for helpful tips that address many common problems\n http://www.circos.ca/documentation/tutorials/reference/best_practices\nThe debugging facility is helpful to figure out what's happening under the hood\n http://www.circos.ca/documentation/tutorials/configuration/debugging\nIf you're still stumped, get support in the Circos Google Group. Please include this error and all your configuration and data files.\n http://groups.google.com/group/circos-data-visualization",
 };
 
 sub error {
@@ -351,6 +354,8 @@ sub error {
 			}
     } else {
 			@text = ("*** CIRCOS ERROR ***",
+							 sprintf("     cwd: %s",cwd()),
+							 sprintf(" command: %s",join(" ",$0,$main::OPT{"_argv"})),
 							 $GROUPERROR{$cat} ? uc $GROUPERROR{$cat} : $EMPTY_STR,
 							 sprintf($error_text,@args),
 							 $ERROR{support}{googlegroup},
@@ -377,20 +382,20 @@ sub error {
 	}
 
 sub fake_error {
-    my $error_path = shift;
-    # fake an error, if we must
-    my ($cat,$name) = split($COMMA,$error_path);
-    if(! $cat && ! $name) {
-	printinfo("The following error categories and IDs are available.");
-	for my $cat (sort keys %ERROR) {
+	my $error_path = shift;
+	# fake an error, if we must
+	my ($cat,$name) = split($COMMA,$error_path);
+	if(! $cat && ! $name) {
+		printinfo("The following error categories and IDs are available.");
+		for my $cat (sort keys %ERROR) {
 	    printinfo($cat);
 	    for my $name (sort keys %{$ERROR{$cat}}) {
-		printinfo(" ",$name);
+				printinfo(" ",$name);
 	    }
-	}
-	exit;
-    } elsif (! $name) {
-	printinfo("The following errors are available for category [$cat]");
+		}
+		exit;
+	} elsif (! $name) {
+		printinfo("The following errors are available for category [$cat]");
 	for my $name (sort keys %{$ERROR{$cat}}) {
 	    printinfo(" ",$name);
 	}

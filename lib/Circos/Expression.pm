@@ -166,8 +166,8 @@ sub parse_expression {
 	# (.+?) replaced by (\w+)
 	# parse _field_ and var(field)
 	my $delim_rx   = qr/(_(\w+)_)/;
-	my $var_rx     = qr/(var\(([\w\?|]+)\))/;
-	my $track_rx   = qr/(track\(([\w|]+)\))/;
+	my $var_rx     = qr/(var\((?!var)'?([\w\?|]+)'?\))/;
+	my $track_rx   = qr/(track\((?!track)'?([\w|]+)'?\))/;
 	while ( $expr  =~ /$var_rx/i || 
 					(fetch_conf("legacy_underline_expression_syntax") && $expr =~ /$delim_rx/i) ) {
 		my ($template,$var) = ($1,$2);
@@ -192,6 +192,7 @@ sub parse_expression {
 			$value = $vardef;
 		}
 		replace_string( \$expr, $template, $value, %args );
+		#printinfo($expr,$template,$value);
 	}
 	# parse functions f(var)
 	for my $f (qw(conf on within between fromto tofrom from to chrlen)) {

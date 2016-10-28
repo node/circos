@@ -36,7 +36,8 @@ our @EXPORT = qw(
 module_check
 );
 
-our @modules = ("Carp qw(carp confess croak)",
+our @modules = (
+								"Carp qw(carp confess croak)",
 								"Clone",
 								"Config::General 2.54",
 								"Cwd",
@@ -70,7 +71,7 @@ our @modules = ("Carp qw(carp confess croak)",
 								"Sys::Hostname",
 								"Text::Balanced",
 								"Text::Format",
-								"Time::HiRes qw(gettimeofday tv_interval)"
+								"Time::HiRes qw(gettimeofday tv_interval)",
 							 );
 
 # Checks whether required modules (names found in @modules) are installed.

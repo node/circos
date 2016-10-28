@@ -100,7 +100,7 @@ use Circos::Utils;
 
 sub parse_chromosomes {
   my $karyotype = shift;
-
+	
   my @chrs;
   
   # get the chromosomes in the karyotype
@@ -111,118 +111,118 @@ sub parse_chromosomes {
   # sort them by digit in chromosome name (e.g. chr1 before chr11 before chrx) (done in Karyotype::sort_karyotype)
   my @chrs_in_k_native_sort = sort { $karyotype->{$a}{chr}{sort_idx} <=> $karyotype->{$b}{chr}{sort_idx} } @chrs_in_k;
   printdebug_group("chrfilter","nativesort",@chrs_in_k_native_sort);
-
+	
   if ( $CONF{chromosomes_display_default} ) {
-      #
-      # The default order for chromosomes is string-then-number if
-      # chromosomes contain a number, and if not then asciibetic
-      #
-      # I used to have this based on the order in the KARYOTYPE (use
-      # {CHR}{chr}{display_order} field) but decided to change it.
-      #
-      if ( $CONF{chromosomes_order_by_karyotype} ) {
-	  # @chrs_in_k already ordered by appearance
-	  printdebug_group("chrfilter","using karyotypeorder");
-      } else {
-	  # sort the chromosomes with digits in them
-	  @chrs_in_k = @chrs_in_k_native_sort;
-	  printdebug_group("chrfilter","using nativesort");
-      }
-      
-      ################################################################
-      # Reconstruct the $CONF{chromosomes} argument using 
-      # chromosomes from karyotype and those in $CONF{chromosomes}
-      my ($chrs_in_c,@chrs_ordered);
-      
-      # First, parse chromosomes and regular expressions in the chromosomes string
-      if ( $CONF{chromosomes} ) {
-	  $chrs_in_c = parse_chromosomes_string($CONF{chromosomes});
-	  #printdumper($chrs_in_c);exit;
-      }
-    CHR_IN_K:
-      for my $chr (@chrs_in_k) {
-	  my $found;
-	  if ($chrs_in_c) {
+		#
+		# The default order for chromosomes is string-then-number if
+		# chromosomes contain a number, and if not then asciibetic
+		#
+		# I used to have this based on the order in the KARYOTYPE (use
+		# {CHR}{chr}{display_order} field) but decided to change it.
+		#
+		if ( $CONF{chromosomes_order_by_karyotype} ) {
+			# @chrs_in_k already ordered by appearance
+			printdebug_group("chrfilter","using karyotypeorder");
+		} else {
+			# sort the chromosomes with digits in them
+			@chrs_in_k = @chrs_in_k_native_sort;
+			printdebug_group("chrfilter","using nativesort");
+		}
+		
+		################################################################
+		# Reconstruct the $CONF{chromosomes} argument using 
+		# chromosomes from karyotype and those in $CONF{chromosomes}
+		my ($chrs_in_c,@chrs_ordered);
+		
+		# First, parse chromosomes and regular expressions in the chromosomes string
+		if ( $CONF{chromosomes} ) {
+			$chrs_in_c = parse_chromosomes_string($CONF{chromosomes});
+			#printdumper($chrs_in_c);exit;
+		}
+	CHR_IN_K:
+		for my $chr (@chrs_in_k) {
+			my $found;
+			if ($chrs_in_c) {
 	      my $accept = 1;
 	      my @chr_in_c_found;
 	      for my $isrx (1,0) {
-		  # for each chromosome in $CONF{chromosomes}
-		CHR_IN_C:
-		  for my $chr_in_c (@$chrs_in_c) {
-		      next if $isrx && ! $chr_in_c->{rx};
-		      next if ! $isrx && $chr_in_c->{rx};
-		      my $reject = $chr_in_c->{reject};
-		      my $match  = 0;
-		      if ($isrx && $chr =~ $chr_in_c->{rx}) {
-			  $match = 1;
-		      }
-		      if (! $isrx && $chr eq $chr_in_c->{chr}) {
-			  $match = 1;
-		      }
-		      printdebug_group("chrfilter",$chr,"inchromosomes",$chr_in_c->{chr},"isrx",defined $chr_in_c->{rx},"match",$match,"reject",$reject);
-		      if ($match) {
-			  push @chr_in_c_found, $chr_in_c;
-			  if ($reject) {
-			      $accept = 0;
-			  } else {
-			      $accept = 1;
-			  }
-			  #last CHR_IN_C;
-		      }
-		  }
-		  printdebug_group("chrfilter",$chr,"rx",$isrx,"accept",$accept);
+					# for each chromosome in $CONF{chromosomes}
+				CHR_IN_C:
+					for my $chr_in_c (@$chrs_in_c) {
+						next if $isrx && ! $chr_in_c->{rx};
+						next if ! $isrx && $chr_in_c->{rx};
+						my $reject = $chr_in_c->{reject};
+						my $match  = 0;
+						if ($isrx && $chr =~ $chr_in_c->{rx}) {
+							$match = 1;
+						}
+						if (! $isrx && $chr eq $chr_in_c->{chr}) {
+							$match = 1;
+						}
+						printdebug_group("chrfilter",$chr,"inchromosomes",$chr_in_c->{chr},"isrx",defined $chr_in_c->{rx},"match",$match,"reject",$reject);
+						if ($match) {
+							push @chr_in_c_found, $chr_in_c;
+							if ($reject) {
+								$accept = 0;
+							} else {
+								$accept = 1;
+							}
+							#last CHR_IN_C;
+						}
+					}
+					printdebug_group("chrfilter",$chr,"rx",$isrx,"accept",$accept);
 	      }
 	      if ($accept) {
-		  if (@chr_in_c_found) {
-		      #printdumper(@chr_in_c_found);
-		      for my $c (@chr_in_c_found) {
-			  next if $c->{reject};
-			  # now both RX and literals will be processed
-			  # this is experimental 0.67-pre8
-			  if (1 || ! $c->{rx}) {
-			      my $str = $c->{chr};
-			      if ($c->{reject}) {
-				  $str = "-$str";
-			      }
-			      if ($c->{tag}) {
-				  $str .= sprintf("[%s]",$c->{tag});
-			      }
-			      if ($c->{runlist}) {
-				  $str .= sprintf(":%s",$c->{runlist});
-			      }
-			      push @chrs_ordered, $str;
-			  } else {
-			      push @chrs_ordered, $chr;
-			  }
-		      }
-		  } else {
-		      push @chrs_ordered, $chr;
-		  }
+					if (@chr_in_c_found) {
+						#printdumper(@chr_in_c_found);
+						for my $c (@chr_in_c_found) {
+							next if $c->{reject};
+							# now both RX and literals will be processed
+							# this is experimental 0.67-pre8
+							if (1 || ! $c->{rx}) {
+								my $str = $c->{chr};
+								if ($c->{reject}) {
+									$str = "-$str";
+								}
+								if ($c->{tag}) {
+									$str .= sprintf("[%s]",$c->{tag});
+								}
+								if ($c->{runlist}) {
+									$str .= sprintf(":%s",$c->{runlist});
+								}
+								push @chrs_ordered, $str;
+							} else {
+								push @chrs_ordered, $chr;
+							}
+						}
+					} else {
+						push @chrs_ordered, $chr;
+					}
 	      } else {
-		  push @chrs_ordered, "-$chr";
+					push @chrs_ordered, "-$chr";
 	      }
-	  } else {
+			} else {
 	      push @chrs_ordered, $chr;
-	  }
-      }
-      $CONF{chromosomes} = join( $SEMICOLON, @chrs_ordered );
-  } 
+			}
+		}
+		$CONF{chromosomes} = join( $SEMICOLON, @chrs_ordered );
+  }
   printdebug_group("chrfilter","effective 'chromosomes' parameter",$CONF{chromosomes});
   
   my %karyotype_chrs_seen;
   
   for my $isrx (1,0) {
-      for my $pair ([$CONF{chromosomes},1],[$CONF{chromosomes_breaks},0]) {
-	  my ($string,$accept_default) = @$pair;
-	  my $chrstring_list = Circos::Configuration::make_parameter_list_array($string,qr/\s*;\s*/);
-	  for my $chrstring (@$chrstring_list) {
+		for my $pair ([$CONF{chromosomes},1],[$CONF{chromosomes_breaks},0]) {
+			my ($string,$accept_default) = @$pair;
+			my $chrstring_list = Circos::Configuration::make_parameter_list_array($string,qr/\s*;\s*/);
+			for my $chrstring (@$chrstring_list) {
 	      my $chr_record = parse_chromosomes_record($chrstring);
 	      my ($reject,$chr,$runlist,$tag,$chrrx) = @{$chr_record}{qw(reject chr runlist tag rx)};
 	      $tag       = $EMPTY_STR if !defined $tag;
 	      $chr       = $EMPTY_STR if !defined $chr;
 	      $runlist   = $EMPTY_STR if !defined $runlist;
 	      if ($chr eq $EMPTY_STR) {
-		  fatal_error("ideogram","unparsable_def",$chrstring);
+					fatal_error("ideogram","unparsable_def",$chrstring);
 	      }
 	      next if $isrx   && ! defined $chrrx;
 	      next if ! $isrx && defined $chrrx;
@@ -232,33 +232,33 @@ sub parse_chromosomes {
 	      my $accept = $accept_default;
 	      $accept = 0 if $reject;
 	      if ( $isrx && $tag) {
-		  fatal_error("ideogram","regex_tag",$chrstring,$tag);
+					fatal_error("ideogram","regex_tag",$chrstring,$tag);
 	      }
 	      my $chrkey = make_key($chr,$tag);
 	      #printinfo($isrx, $chrrx, $isrx ? "RX" : "NOTRX", !$isrx && defined $chrrx ? "next" : "accept");
 	      if ( ! $isrx && ! defined $karyotype->{$chr}{chr} ) {
-		  fatal_error("ideogram","use_undefined",$chrstring,$chr);
+					fatal_error("ideogram","use_undefined",$chrstring,$chr);
 	      }
 	      
 	      my @chrs_to_store;
 	      if ($isrx) {
-		  for my $c (@chrs_in_k_native_sort) {
-		      next if $accept && $karyotype_chrs_seen{ make_key($c,$tag) };
-		      if ($c =~ /$chrrx/i) {
-			  push @chrs_to_store, $c;
-			  $karyotype_chrs_seen{ make_key($c,$tag) }++;
-			  $karyotype_chrs_seen{ make_key($c,"") }++;
-		      }
-		  }
+					for my $c (@chrs_in_k_native_sort) {
+						next if $accept && $karyotype_chrs_seen{ make_key($c,$tag) };
+						if ($c =~ /$chrrx/i) {
+							push @chrs_to_store, $c;
+							$karyotype_chrs_seen{ make_key($c,$tag) }++;
+							$karyotype_chrs_seen{ make_key($c,"") }++;
+						}
+					}
 	      } else {
-		  for my $c (@chrs_in_k_native_sort) {
-		      next if $accept && $karyotype_chrs_seen{ make_key($c,$tag) };
-		      if ($c eq $chr) {
-			  push @chrs_to_store, $c;
-			  $karyotype_chrs_seen{ make_key($c,$tag) }++;
-			  $karyotype_chrs_seen{ make_key($c,"") }++;
-		      }
-		  }
+					for my $c (@chrs_in_k_native_sort) {
+						next if $accept && $karyotype_chrs_seen{ make_key($c,$tag) };
+						if ($c eq $chr) {
+							push @chrs_to_store, $c;
+							$karyotype_chrs_seen{ make_key($c,$tag) }++;
+							$karyotype_chrs_seen{ make_key($c,"") }++;
+						}
+					}
 	      }
 	      #printdumper(\%karyotype_chrs_seen);
 	      printdebug_group("chrfilter","chrrx",$chrstring,"rx?",$isrx,"accept",$accept,"tag",$tag || "-","chrs",@chrs_to_store);

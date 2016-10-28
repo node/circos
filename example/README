@@ -11,6 +11,12 @@ configuration file syntax.
 ***
 *** http://www.circos.ca/tutorials/lessons/quick_start
 
+The example uses relative paths in the configuration file. You need to
+run the example from this directory. Read more about relative/absolute
+paths in data file names here.
+
+http://circos.ca/documentation/tutorials/configuration/data_files/
+
 Use the online tutorials (see below) to learn about configuration syntax.
 
 To create the image, execute the 'run' script (UNIX)

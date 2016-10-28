@@ -171,9 +171,15 @@ sub parse_spacing {
 
 	my $spacing = parse_value($str,$max-$min);
 
-	if((my $num_axes = ($max-$min) / $spacing) > 1000) {
-		fatal_error("track","too_many_axes",$spacing,$num_axes);
+	if($spacing) {
+		if(my $num_axes = ($max-$min)/$spacing > 1000) {
+			fatal_error("track","too_many_axes",$spacing,$num_axes);
+		}
+	} else {
+		return;
 	}
+
+	#fatal_error("track","division",$min,$max,$str) if ! $spacing;
 
 	my $ystart = first_defined(seek_parameter("y0",@$pp),$min);
 	my $yend   = first_defined(seek_parameter("y1",@$pp),$max);

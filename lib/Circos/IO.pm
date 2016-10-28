@@ -62,6 +62,19 @@ use Circos::Ideogram;
 use Circos::Utils;
 use Circos::Unit;
 
+sub band_to_coord {
+	my ($chr,$band,$k) = @_;
+	my $span = Set::IntSpan->new();
+	for my $b (@{$k->{$chr}{band}}) {
+		if($b->{name} =~ /$band( \. | $ )/xi || ( $band =~ /[pq]$/ && $b->{name} =~ /^$band/) ) {
+			printdebug_group("band",$chr,$band,"includes",$b->{name},$b->{set}->min,$b->{set}->max);
+			$span->U($b->{set});
+		}
+	}
+	printdebug_group("band",$chr,$band,"span",$span->min,$span->max);
+	return {chr=>$chr,start=>$span->min,end=>$span->max};
+}
+
 # -------------------------------------------------------------------
 sub read_data_file {
   # Read a data file and associated options.
@@ -91,6 +104,7 @@ sub read_data_file {
 									 coord_label_options => [qw(chr start end label options)],
 									 link_twoline        => [qw(id chr start end options)],
 									 link                => [qw(chr start end chr start end options)],
+									 link_translocation  => [qw(kstring options)],
 									};
 
   my $fields = {
@@ -102,8 +116,10 @@ sub read_data_file {
 								tile         => $line_type->{coord_value_options},
 								text         => $line_type->{coord_value_options},
 								connector    => $line_type->{coord_value_options},
+								link_translocation => $line_type->{link_translocation},
 								link_twoline => $line_type->{link_twoline},
 								link         => $line_type->{link},
+
 							 };
 
 	# The value can now be any string. This allows the same data files to be used
@@ -124,6 +140,8 @@ sub read_data_file {
 												 comment => "non-empty string" },
 						options => { rx => qr/=/,
 												 comment => "variable value pair (x=y)" },
+						kstring => { rx => qr/./,
+												 comment => "ISCN string" },
 					 };
 
   my ($data,$prev_value);
@@ -150,9 +168,15 @@ sub read_data_file {
     next if $options->{file_rx} && ! /$options->{file_rx}/;
     $linenum++;
     my @tok = $delim_rx ? split(/$delim_rx/) : split;
-    if ($type eq "link" && @tok < 6 ) {
-      $type = "link_twoline";
-    }
+		if ($type  =~ /link/) {
+			if(@tok < 3) {
+				$type = "link_translocation";
+			} elsif (@tok < 6 ) {
+				$type = "link_twoline";
+			} else {
+				$type = "link";
+			}
+		}
 
     my $line  = $_;
     my $datum = { data => [ ], param => { } };
@@ -218,6 +242,8 @@ sub read_data_file {
       if ( $field eq "options" && defined $value && $value ne $EMPTY_STR) {
 				my $options = parse_options($value);
 				$datum->{param} = $options;
+			} elsif ($field eq "kstring") {
+				$datum->{param} = { kstring=>$value };
       } else {
 				# all fields are named
 				my $field_name = $field eq "label" ? "value" : $field;
@@ -244,6 +270,20 @@ sub read_data_file {
     }
 
     $prev_value = $datum->{data}[0]{value};
+
+		# parse karyotype strings that correspond to translocations
+		if($type eq "link_translocation") {
+			my $kstr = $datum->{param}{kstring};
+			my ($chr1,$chr2,$b1,$b2) = ( $kstr =~ /t\((.+);(.+)\)\((.+);(.+)\)/ );
+			$chr1 = "hs$chr1";
+			$chr2 = "hs$chr2";
+			
+			$datum->{data} = [ band_to_coord($chr1,$b1,$KARYOTYPE),
+												 band_to_coord($chr2,$b2,$KARYOTYPE) ];
+			
+		}
+		
+		#printdumper($datum);
 
     # verify that this data point is on a drawn ideogram
     if ( ! is_on_ideogram($datum) ) {
@@ -308,11 +348,16 @@ sub read_data_file {
       if (! $hide_link_twoline->{$linkid}) {
 				push @{$data->{$linkid}}, $datum;
       }
-    } elsif ( $type eq "histogram" && defined $datum->{data}[0]{value} && $datum->{data}[0]{value} =~ /,/ ) {
+    } elsif ( $type eq "histogram" 
+							&& 
+							defined $datum->{data}[0]{value}
+							&&
+							$datum->{data}[0]{value} =~ /,/ ) {
       #
       # for stacked histograms where values are comma separated
       #
       my @values = split( /,/, $datum->{data}[0]{value} );
+			my $sum    = sum(@values);
       my ( @values_sorted, @values_idx_sorted );
       if ( $options->{sort_bin_values} ) {
 				@values_sorted = sort { $b <=> $a } @values;
@@ -320,10 +365,21 @@ sub read_data_file {
 					map  { $_->[0] }
 						sort { $b->[1] <=> $a->[1] }
 							map  { [ $_, $values[$_] ] } ( 0 .. @values - 1 );
-      } else {
+			} else {
 				@values_sorted     = @values;
 				@values_idx_sorted = ( 0 .. @values - 1 );
       }
+			if($options->{normalize_bin_values}) {
+				if($sum) {
+					@values_sorted = map { $_/$sum } @values_sorted;
+				}
+			}
+			if ( my $n = $options->{bin_values_num} ) {
+				#printdumper($options);
+				@values_sorted     = @values[0..$n-1] if $n < @values_sorted;
+				@values_idx_sorted = @values_idx_sorted[0..$n-1] if $n < @values_idx_sorted;
+				@values            = @values_sorted;
+			}
 
       for my $i ( 0 .. @values - 1 ) {
 				# first value has the highest z
@@ -340,7 +396,9 @@ sub read_data_file {
 						next unless defined $value;
 						my @param_values;
 						if ($param eq "fill_color") {
+							#printinfo(Circos::color_to_list($value));
 							@param_values = Circos::color_to_list($value);
+
 						} else {
 							@param_values = split(/\s*,\s*/,$value)
 						}

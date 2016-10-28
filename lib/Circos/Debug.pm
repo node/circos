@@ -79,6 +79,7 @@ our @debug_groups = qw(
 											 angle
 											 anglepos
 											 axis
+											 band
 											 background
 											 bezier
 											 brush
@@ -124,19 +125,19 @@ sub register_debug_groups {
 		#printinfo("-debug_group",$opt->{debug_group});
 		%group = () if $opt->{debug_group} !~ /[+-]/;
 		for my $g (split($COMMA,$opt->{debug_group})) {
-			#printinfo("parsing",$g);
-			if(! grep($g eq $_, @debug_groups) && $g ne "_all") {
+			my ($g_flag,$g_name) = ($g =~ /([-+])?(.+)/i);
+			if(! grep($g_name eq $_, @debug_groups) && $g_name ne "_all") {
 				Circos::Error::fatal_error("configuration","no_debug_group",$g,join(", ",@debug_groups));
 			}
-			if($g =~ /^-(.+)/) {
+			if(defined $g_flag && $g_flag eq "-") {
 				#printinfo("deleting",$g);
-				delete $group{$1};
-			} elsif( $g =~ /^[+](.+)/ ) {
+				delete $group{$g_name};
+			} elsif( defined $g_flag && $g_flag eq "+" ) {
 				#printinfo("adding",$1);
-				$group{$1}++;
+				$group{$g_name}++;
 			} else {
 				#printinfo("adding",$g);
-				$group{$g}++;
+				$group{$g_name}++;
 			}
 		}
 	} elsif (exists $opt->{debug_group}) {

@@ -1,4 +1,4 @@
-#!/bin/env perl
+#!/usr/bin/env perl
 
 =pod
 
@@ -12,21 +12,18 @@
 
                                                 round is good
 
-circos - generate circularly composited information graphics
+circos - generate circular data visualizations
 
 =head1 SYNOPSIS
 
-  # guess location of configuration file
+  # without -conf Circos will search for configuration
   circos
 
   # use specific configuration file
-  circos -conf circos.conf [-silent]
+  circos -conf circos.conf 
 
   # diagnose required modules
   circos -modules
-
-  # man page
-  circos -man
 
   # detailed debugging for code components
   # see http://www.circos.ca/documentation/tutorials/configuration/debugging
@@ -35,40 +32,64 @@ circos - generate circularly composited information graphics
   # full debugging
   circos -debug_group _all
 
+  # absolutely no reporting
+  circos ... [-silent]
+
   # configuration dump of a block (or block tree) of
   # any parameters that match REGEXP (optional)
   circos -cdump [BLOCK1/[BLOCK2/...]]{:REGEXP}
+  circos -cdump ideogram
+  circos -cdump ideogram:label
+  circos -cdump ideogram/spacing
 
-  # overriding configuration parameters
+  # override configuration parameters
   circos -param image/radius=2000p -param ideogram/show=no
 
   # for fun - randomize all colors in the image except for
-  # COLOR1 and COLOR2
+  # COLOR1, COLOR2,...
   circos -randomcolor COLOR1,[COLOR2,...]
+  circos -randomcolor white,black
+
+  # brief help
+  circos -h
+
+  # man page
+  circos -man
+ 
+  # version
+  circos -v
 
 =head1 DESCRIPTION
 
-Circos is for visualizing data in a circular layout, ideal for
-exploring relationships between objects or positions. There are other
-reasons why a circular layout is advantageous, not the least being the
-fact that it is attractive.
+Circos generates circular data visualizations. It is ideal for
+exploring relationships between objects or positions. 
+
+Circos does not have an interface. It is driven by plain-text configuration files (see below). This makes Circos scriptable and easily incorporated into automatic data analysis and reporting pipelines.
+
+=head2 Uses
+
+Circos was initially designed to visualize genomic information, specifically
+genomic rearrangements in tumor genomes. Although some important parameters in configuration files are named to be intuitve to biologists (e.g. "chromosomes"), Circos is not limited to the kind of data it can display. Circular heatmaps, histograms, scatter plots and other types of data displays can be easily made from data collected in other fields, such as meteorology, social science, and computer security.
+
+=head2 Salience and Relevance
+
+One of the challenges in creating data visualizations is to aptly map what is important (relevance) onto graphical elements that stand out from others (salience). Being able to emphasize (e.g. change color) or attenuate (e.g. add transparency or even hide) salience of information without changing the original data input files is a key feature of Circos.
+
+How data is displayed can be easily changed by writing rules, which are evaluated at run-time. Rules can be designed to apply to all data points or only to those that pass certain conditions. Conditions can be based on any property of the data (value, position, format). Rules can be chained into a decision tree making it possible to progressively change the format of data based on the output of other rules.
+
+=head2 Data Input Format
+
+Data input formats are plain-text and made to be as simple as possible. 
+
+=head2 Is it right for you?
 
 Circos is not a solution. It's a tool to solve visualization
-problems. For a given problem, you are not guaranteed that it's
+problems. For a given problem, you are not guaranteed that Circos is
 appropriate.
-
-You have fine control over how each data element is displayed, helping
-you to match salience to pertinence.
 
 =head1 CONFIGURATION
 
-Settings are meant to be passed using a plain-text configuration
-file. This file can be created manually or by another script, which
-allows Circos to be fully automated.
-
-For full documentation, see
-
-  L<http://www.circos.ca/documentation/tutorials>
+Plain-text configuration file, which define a hierarchy of parameters, control creation of images. These files determine which files Circos uses for its input data, how the data are shown, the layout and formatting of elements in the image as well as system parameters that control low-level functions.
 
 =head2 Syntax
 
@@ -81,6 +102,9 @@ To get started, refer to the quick guide tutorial.
   L<http://www.circos.ca/documentation/tutorials/quick_guide>
 
 A typical configuration file might look like this
+ 
+  # chromosome name and length definitions
+  karyotype = myfile.txt
 
   # image size and format 
   <image>
@@ -92,10 +116,22 @@ A typical configuration file might look like this
    ...
   </ideogram>
 
+  # frequency, position and labeling of tick marks
+  <ticks>
+   ...
+  </ticks>
+
   # position, type and format of data tracks
   <plots>
    <plot>
      ...
+    # run-time rules to change data format and visibility
+     <rules>
+       <rule>
+        ...
+       </rule>
+       ...
+      </rules>
    </plot>
    ...
   </plots>
@@ -108,11 +144,30 @@ A typical configuration file might look like this
 
 =head2 Modularity
 
-The C<<<include FILE>>> directive imports one configuration file into another. This facility helps to keep configuration files modular.
+Configuration from one file can be included in another, making it possible to have a very modular setup. For example, if several kinds of images are made for a single project, there can be project-wide configuration definitions which are then complemeted, and possibly overwritten, by image-specific configuration. 
 
-Parameter definitions that do not frequently change, such as color and font definitions, are conventionally imported from files found in F<etc/> in the distribution.
+The C<<<include FILE>>> directive imports one configuration file into another.
+
+  # circos.conf
+  <<include ideogram.conf>>
+
+  # ideogram.conf
+  <<include ideogram.label.conf>>
+  <<include ideogram.size.conf>>
+  ...
 
 In the tutorials, you'll find that the C<<ideogram>> and C<<ticks>> blocks are imported into the main configuration file. Because these blocks can get quite large, the main configuration file is more legible if they are relegated to separate files.
+
+Parameter definitions that do not frequently change, such as color and font definitions, are conventionally imported from files found in F<etc/> in the distribution. Every Circos image should have
+
+  # image size, output file name
+  <image>
+  <<include etc/image.conf>>
+  </image>
+  # color names and lists, location of fonts, fill patterns
+  <<include etc/colors_fonts_patterns.conf>>
+  # low-level system parameters
+  <<include etc/housekeeping.conf>>
 
 =head2 Overriding with *
 
@@ -127,8 +182,8 @@ To override a parameter that has been included from a file, use the C<*> suffix.
 
 The C<*> suffix can be repeated to specify which value takes precedence in a block.
 
-  radius = 1500p
-  radius* = 2500p
+  radius   = 1500p
+  radius*  = 2500p
   radius** = 3000p # this instance of radius will be used
 
 =head2 Overriding with Command Line
@@ -158,12 +213,23 @@ and
   
   -param ideogram/spacing/default=0.01r
 
-When conf() is used in the configuration file to retrieve the value of a parmameter (any parameter, not just those set by -param), you get a flexible system for changing the configuration at the command line.
+=head2 Accessing Parameters 
 
-  species = human
+The C<conf()> function is used in the configuration file to retrieve the value of a parmameter. It can be used to retrieve any parameter, not just those set by C<-param>). This provides a very flexible system for changing the configuration at the command line.
+
+For example, in this case the karyotype file name will change as the C<species> parameter is changed either in the configuration file or using the <C-param> flag. Similarly, the color palette size and name can be adjusted.
+
+  # circos.conf
+  species    = human
+  palette    = blues
+  num_colors = 9
   karytotype = data/karyotype/karyotype.conf(species).txt
+  ...
+  <plots>
+   color     = conf(palette)-seq-conf(num_colors)
+   ...
 
-  -param species=rat
+  > circos ... -param species=rat -param palette=reds -param num_colors=5
    
 Multiple parameters can be redefined, each with its own C<-param> flag
 
@@ -183,6 +249,69 @@ The purpose of this is to allow you to add to canonical definitions.
   mycolor = 150,25,25
   </colors>
 
+=head2 Absolute and Relative Paths
+
+The use of absolute paths are used in configuration file is discouraged. Doing so makes your configuration less modular and unuseable on another system.
+
+For example, if Joe's files are organized thus
+
+  /user/joe/project/
+                    data/genes.txt
+                    etc/circos.conf
+
+he could use
+
+  file = /user/joe/project/data/genes.txt
+
+and run Circos from his home directory
+
+  > cd ~
+  > circos -conf project/etc/circos.conf
+
+It would be much better for him to define
+
+  file = data/genes.txt
+
+and run Circos from the project/ directory
+
+  > cd ~/project
+  > circos
+
+Now, if he creates a tarball of all the project files (e.g. C<project.tgz>), anyone could use the files by executing exactly the same commands.
+
+When you define a file with a relative path, such as
+
+  file = data/genes.txt
+
+Circos will look for this file relative to several reasonable start points, such as the location of the configuration file that you are using, one level up from the configuration location, your current directory, and so on.
+
+To see where Circos is searching for files, use
+  
+  > circos -debug_group io
+
+This is the same mechanism used to find the initial configuration file. If you run Circos without the C<-conf> flag,
+
+  > cd ~/project
+  > circos
+
+then Circos will look for
+
+  ~/project/circos.conf
+  ~/project/etc/circos.conf
+  ~/project/data/circos.conf
+  ~/project/../circos.conf
+  ~/project/../etc/circos.conf
+  ...
+
+If the configuration file cannot be found, Circos will default to looking into its distribution directory.
+
+Users who are unaware of this feature often manage to get away with unorganized project files because this automatic file search feature. The purpose of this feature is to make your life easier when you know what you're doing -- not necessarily to make it possible when you don't know what you're doing. 
+
+If you want to redefine the search paths, see the C<data_path> parameter in C<etc/housekeeping.conf> in the distribution directory, or overide it in your configuration file
+
+  <<include etc/housekeeping.conf>>
+  data_path* = ...
+
 =head1 OPTIONS
 
 =head2 Configuration
@@ -194,7 +323,7 @@ The purpose of this is to allow you to add to canonical definitions.
 Name of configuration file. This is required.
 
 Circos will attempt to guess the location of this file, searching for
-C<circos.conf> in C<.>, C<..>, and C<../..>.
+C<circos.conf> in C<.>, C<..>, and C<../..>. This is described above.
 
 =back
 
@@ -219,6 +348,11 @@ Toggles output of PNG and SVG files.
 =item -show_tick_labels, -noshow_tick_labels
 
 Override the display of ticks and their labels. These are both usually defined in the <ticks> block.
+
+These flags are shortcuts to
+
+  -param show_ticks=no
+  -param show_tick_labels=no
 
 =back
 
@@ -267,9 +401,11 @@ To list the groups that are supported, use the flag without an argument
 
   -debug_group
 
+Those listed with a "*" are turned on by default. To change this, adjust C<debug_group> in C<etc/housekeeping.conf> in the distribution directory.
+
 =item -time
 
-Report timing information. Same as -debug_group +timer
+Report timing information. Same as C<-debug_group +timer>.
 
 =item -silent 
 
@@ -277,11 +413,11 @@ Generate no reporting.
 
 =item -paranoid, -noparanoid
 
-Run in paranoid mode (default), or not. The default for this setting is defined by 'paranoid' in etc/housekeeping.conf.
+Run in paranoid mode (default), or not. The default for this setting is defined by C<paranoid> in C<etc/housekeeping.conf>.
 
 =item -warnings, -nowarnings
 
-Display warnings, or not (default). The default for this setting is defined by 'warnings' in etc/housekeeping.conf.
+Display warnings, or not (default). The default for this setting is defined by C<warnings> in C<etc/housekeeping.conf>.
 
 =item -fakeerror
 =item -fakeerror CAT
@@ -326,12 +462,20 @@ For example, to keep the background white and anything that is black,
 
 =back
 
+=head1 DOCUMENTATION
+
+For full documentation, see
+
+  L<http://www.circos.ca/documentation/tutorials>
+
+=back
+
 =cut
 
 use strict;
 use warnings;
 use FindBin;
-use Getopt::Long;
+use Getopt::Long qw(:config pass_through posix_default auto_abbrev);
 use Pod::Usage;
 
 use lib "$FindBin::RealBin";
@@ -339,44 +483,47 @@ use lib "$FindBin::RealBin/../lib";
 use lib "$FindBin::RealBin/lib";
 use Circos;
 
+use Cwd;
 use Circos::Debug;
+use Circos::Error;
 
-my %OPT;
-GetOptions(\%OPT,
-					 'configfile=s',
-					 'param=s@',
-					 'cdump:s',
+our %OPT = (_argv=>join(" ",@ARGV),_cwd=>cwd());
 
-					 'dir=s',
-					 'file=s',
-					 'outputdir=s',
-					 'outputfile=s',
-					 'png!',
-					 'svg!',
-					 'imagemap',
+my $option_success = GetOptions(\%OPT,
 
-					 'color_cache_rebuild',
-					 'color_cache_static',
-					 'randomcolor:s',
+																'configfile=s',
+																'param=s@',
+																'cdump:s',
 
-					 'help',
-					 'man',
-					 'silent',
-					 'paranoid!',
-					 'warnings!',
-					 'fakeerror:s',
-					 'debug+',
-					 'debug_group:s',
-					 'version',
-					 'time',
-					 'timer',
-					 'timers',
+																'dir=s',
+																'file=s',
+																'outputdir=s',
+																'outputfile=s',
+																'png!',
+																'svg!',
+																'imagemap',
 
-					 'show_ticks!',
-					 'show_tick_labels!',
+																'color_cache_rebuild',
+																'color_cache_static',
+																'randomcolor:s',
 
-	  );
+																'help',
+																'man',
+																'silent',
+																'paranoid!',
+																'warnings!',
+																'fakeerror:s',
+																'debug+',
+																'debug_group:s',
+																'version',
+																'time',
+																'timer',
+																'timers',
 
+																'show_ticks!',
+																'show_tick_labels!',
+														);
+fatal_error("configuration","bad_command_line_options",join(" ",@ARGV)) if ! $option_success || @ARGV;
 pod2usage()            if $OPT{'help'};
 pod2usage(-verbose=>2) if $OPT{'man'};
 Circos->run(%OPT);
@@ -387,11 +534,22 @@ Circos->run(%OPT);
 
 =head1 AUTHOR
 
-Martin Krzywinski L<martink@bcgsc.ca> L<http://mkweb.bcgsc.ca>
+Martin Krzywinski 
+L<martink@bcgsc.ca> 
+L<http://mkweb.bcgsc.ca> 
+L<@MKrzywinski>
+
+Canada's Michael Smith Genome Sciences Centre
+100-570 W 7th Ave
+Vancouver BC V5Z 4S6 Canada
+
+L<http://www.bcgsc.ca>
 
 =head1 RESOURCES
 
 L<http://www.circos.ca>
+
+L<https://groups.google.com/forum/#!forum/circos-data-visualization>
 
 =head1 CITING
 
@@ -411,9 +569,7 @@ Hive plots L<http://www.hiveplot.com>
 
 =head1 COPYRIGHT & LICENSE
 
-Copyright 2004-2014 Martin Krzywinski, all rights reserved.
-
-This file is part of the Genome Sciences Centre Perl code base.
+Copyright 2004-2015 Martin Krzywinski, all rights reserved.
 
 This script is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by

@@ -1,7 +1,7 @@
 package Circos;
 
-our $VERSION      = "0.67-7";
-our $VERSION_DATE = "16 Mar 2015";
+our $VERSION      = "0.69-3";
+our $VERSION_DATE = "24 Jun 2016";
 
 =pod
 
@@ -39,7 +39,7 @@ another image, call run again with different options.
 
 =head1 VERSION
 
-Version 0.67-6
+Version 0.69-3
 
 =head1 FUNCTIONS/METHODS
 
@@ -124,6 +124,8 @@ or a hashref of the configuration options.
     Circos::Debug::register_debug_groups(\%OPT,\%CONF);
 
     printdebug_group("summary",sprintf("welcome to circos v%s %s on Perl %s",$VERSION,$VERSION_DATE,$]));
+    printdebug_group("summary",sprintf("current working directory %s",cwd()));
+		printdebug_group("summary",sprintf("command %s %s",$0,$OPT{_argv} || "[no flags]"));
 
     if ( $OPT{config} ) {
 			%CONF = %{ $OPT{config} };
@@ -522,7 +524,7 @@ or a hashref of the configuration options.
 			$ideogram->{length}{cumulative}{scale}   = $Gsize;
 			$ideogram->{length}{cumulative}{noscale} = $GSIZE_NOSCALE;
 			for my $cover ( @{ $ideogram->{covers} } ) {
-				$Gsize += ( $cover->{set}->cardinality - 1 ) * $cover->{scale};
+				$Gsize         += ( $cover->{set}->cardinality - 1 ) * $cover->{scale};
 				$GSIZE_NOSCALE += ( $cover->{set}->cardinality - 1 );
 			}
     }
@@ -549,7 +551,7 @@ or a hashref of the configuration options.
     for my $iter (1..$rescale_iterations) {
 			my %seen_chr;
 			for my $i (0..@IDEOGRAMS-1) {
-				my $id = $IDEOGRAMS[$i];
+				my $id        = $IDEOGRAMS[$i];
 				my $scale_rel = $id->{scale_relative};
 				next if ! defined $scale_rel;
 				if ($scale_rel >= 1 || $scale_rel <= 0) {
@@ -557,8 +559,7 @@ or a hashref of the configuration options.
 				}
 				# total scaled length of all covers for this ideogram
 				my $displayed_len = sum (map { $_->{set}->cardinality * $_->{scale} } @{$id->{covers}});
-	    
-				my $scale_mult  = $scale_rel * ($GCIRCUM - $displayed_len) / ( $displayed_len * ( 1 - $scale_rel ) );
+				my $scale_mult    = $scale_rel * ($GCIRCUM - $displayed_len) / ( $displayed_len * ( 1 - $scale_rel ) );
 				# adjust the cover scale so that the length is the fraction of displayed
 				# genome given by scale_relative
 				#
@@ -589,7 +590,7 @@ or a hashref of the configuration options.
 				}
 			}
 
-			$Gsize = 0;
+			$Gsize         = 0;
 			$GSIZE_NOSCALE = 0;
 			for my $ideogram (@IDEOGRAMS) {
 				$ideogram->{length}{cumulative}{scale}   = $Gsize;
@@ -615,7 +616,7 @@ or a hashref of the configuration options.
 				my $id1     = $IDEOGRAMS[$i];
 				my $id2     = $IDEOGRAMS[$i+1] || $IDEOGRAMS[0];
 				my $spacing = ideogram_spacing($id1,$id2,0);
-				$GCIRCUM   += $spacing; 
+				$GCIRCUM   += $spacing;
 			}
 
 			printdebug_group("scale","rescaling",
@@ -652,8 +653,7 @@ or a hashref of the configuration options.
 										 'px diameter'
 										);
     
-    printsvg( qq{<svg width="$DIMS->{image}{width}px" height="$DIMS->{image}{height}px" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">}
-						);
+    printsvg(qq{<svg width="$DIMS->{image}{width}px" height="$DIMS->{image}{height}px" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">});
 
     register_chromosomes_radius($CONF{chromosomes_radius});
 
@@ -679,7 +679,7 @@ or a hashref of the configuration options.
 			}
 			$bgfill = 1;
     }
-		
+
     start_timer("color");
     # Always allocate colors
     if (1 || $PNG_MAKE) {
@@ -701,6 +701,16 @@ or a hashref of the configuration options.
 			}
 			$COLORS->{clear} = $COLORS->{transparent};
 			printdebug_group("color","allocated", int( keys %$COLORS ), "colors in",tv_interval($t),"s" );
+
+			# draw svg background
+			#
+			if($SVG_MAKE) {
+				my @rgb = $IM->rgb( fetch_color($CONF{image}{background} || "white",$COLORS));
+				my $rgb = join(",",@rgb);
+				printsvg(qq{<g id="bg">});
+				printsvg(qq{<rect x="0" y="0" width="$DIMS->{image}{width}px" height="$DIMS->{image}{height}px" style="fill:rgb($rgb);"/>});
+				printsvg(qq{</g>});
+			}
 			if ($bgfill) {
 				$IM->fill( 0, 0, fetch_color($CONF{image}{background} || "white", $COLORS) );
 			}
@@ -1451,6 +1461,8 @@ or a hashref of the configuration options.
 					$track_file_param->{param}{thickness}  = seek_parameter( "thickness", @param_path );
 					$track_file_param->{param}{color}      = seek_parameter( "color", @param_path );
 					$track_file_param->{sort_bin_values}   = seek_parameter( "sort_bin_values", @param_path ),
+					$track_file_param->{normalize_bin_values}   = seek_parameter( "normalize_bin_values", @param_path ),
+					$track_file_param->{bin_values_num}    = seek_parameter( "bin_values_num", @param_path ),
 				}
 				$track->{__data} = Circos::IO::read_data_file($track_file, $track_type, $track_file_param,$KARYOTYPE);
 			} else {
@@ -1510,9 +1522,16 @@ or a hashref of the configuration options.
 			my $orientation_direction = match_string($orientation,"in") ? -1 : 1;
 	
 			my $plot;
-			my $r0 = round(unit_parse( seek_parameter( "r0", @param_path ) ));
-			my $r1 = round(unit_parse( seek_parameter( "r1", @param_path ) ));
-
+			my ($r0,$r1);
+			if(seek_parameter("inside_ideogram",@param_path)) {
+				$r0 = round(unit_parse("dims(ideogram,radius_inner)"));
+				$r1 = round(unit_parse("dims(ideogram,radius_outer)"));
+				$track->{r0} = $r0;
+				$track->{r1} = $r1;
+			} else {
+				$r0 = round(unit_parse( seek_parameter( "r0", @param_path ) ));
+				$r1 = round(unit_parse( seek_parameter( "r1", @param_path ) ));				
+			}
 			printdebug_group("summary",
 											 "drawing",$track->{id},$track_type,
 											 "z",$track->{z},
@@ -1718,7 +1737,7 @@ or a hashref of the configuration options.
 					my $ideogram_idx = get_ideogram_idx( $data_point->{start}, $data_point->{chr} );
 					my $ideogram     = get_ideogram_by_idx($ideogram_idx);
 
-					$radius    = 	unit_parse( seek_parameter( "r0", @param_path ), $ideogram );
+					$radius = unit_parse( seek_parameter( "r0", $datum, @param_path ), $ideogram );
 					#$r0 = unit_parse( seek_parameter( "r0", @param_path ), $ideogram );
 					#$r1 = unit_parse( seek_parameter( "r1", @param_path ), $ideogram );
 
@@ -2437,9 +2456,9 @@ or a hashref of the configuration options.
 					my $rd     = abs( $r0 - $r1 );
 					my $angle0 = getanglepos( $data_point->{start}, $data_point->{chr} );
 					my $angle1 = getanglepos( $data_point->{end},   $data_point->{chr} );
-					my $svg    = { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum,@param_path) },
-						# In read_data_file, coordinates with start>end have the positions reversed and 'rev' key set
-						($angle0,$angle1) = ($angle1,$angle0) if $data_point->{rev};
+					my $svg    = { attr => seek_parameter_glob("^svg.*",qr/^svg/,$datum,@param_path) };
+					# In read_data_file, coordinates with start>end have the positions reversed and 'rev' key set
+					($angle0,$angle1) = ($angle1,$angle0) if $data_point->{rev};
 					my @dims = split( $COMMA,	seek_parameter( "connector_dims", $datum, @param_path ) );
 
 					my $thickness = seek_parameter( "thickness", $datum, @param_path );
@@ -4313,7 +4332,7 @@ sub reform_chrorder_groups {
 																				type resolution padding resolve_order label_snuggle
 																				snuggle_tolerance snuggle_link_overlap_test snuggle_sampling
 																				snuggle_refine snuggle_link_overlap_tolerance
-																				max_snuggle_distance resolve_tolerance sort_bin_values
+																				max_snuggle_distance resolve_tolerance normalize_bin_values sort_bin_values bin_values_num
 																				overflow overflow_color overflow_font overflow_size
 																				link_thickness link_orientation link_color show_links link_dims skip_run
 																				min_value_change yoffset
@@ -4636,7 +4655,7 @@ sub draw_ticks {
 	$CONF{debug_validate} && validate( @_, { ideogram         => 1 } );
 
 	my %args             = @_;
-	my $ideogram         = $args{'ideogram'};
+	my $ideogram         = $args{ideogram};
 	my $chr              = $ideogram->{chr};
 
 	my @requested_ticks = make_list( $CONF{ticks}{tick} );
@@ -4667,14 +4686,16 @@ sub draw_ticks {
 
   for my $tick (@requested_ticks) {
     next if defined $tick->{_ideogram};
-		
+
     my $show_default    = seek_parameter( "chromosomes_display_default", $tick, $CONF{ticks} )
       || ! defined seek_parameter( "chromosomes_display_default", $tick, $CONF{ticks} );
     my $ideogram_filter = seek_parameter( "chromosomes", $tick, $CONF{ticks} );
-    $tick->{_ideogram} = {show_default=>$show_default,
-													filter=>merge_ideogram_filters(parse_ideogram_filter(seek_parameter( "chromosomes", $CONF{ticks} )),
-																												 parse_ideogram_filter(seek_parameter( "chromosomes", $tick )))
+    $tick->{_ideogram} = {
+													show_default => $show_default,
+													filter       => merge_ideogram_filters(parse_ideogram_filter(seek_parameter("chromosomes", $CONF{ticks} )),
+																																 parse_ideogram_filter(seek_parameter("chromosomes", $tick )))
 												 };
+		#printdumper($tick->{_ideogram});
   }
 
   # parse and fill data structure for each tick level - process
@@ -4702,7 +4723,19 @@ sub draw_ticks {
   # defined (rspacing*ideogram_size) by process_tick_structure()
 	#printdumper(\@requested_ticks);exit;
 	for my $tickdata ( sort { (unit_strip($b->{spacing}||0)) <=> (unit_strip($a->{spacing}||0)) } @requested_ticks ) {
+		my $filter = $tickdata->{_ideogram};
 		next unless show_element($tickdata);
+		if($filter->{show_default} &&
+			 exists $filter->{filter}{$chr}{hide} && 
+			 $filter->{filter}{$chr}{hide}->cardinality < 1 ) {
+			printinfo("skipping",$chr,$tickdata->{spacing});
+			next;
+		}
+		if(! $filter->{show_default} &&
+			 ! $filter->{filter}{$chr}) {
+			printinfo("skipping",$chr,$tickdata->{spacing});
+			next;
+		}
 		my $tick_label_max;
 		for my $tick_radius ( @{ $tickdata->{_radius} } ) {
 	    printdebug_group(
@@ -5745,7 +5778,7 @@ sub register_chromosomes_scale {
 					$ideogram->{scale_relative} = $scale;
 				} elsif ($chr_scale =~ /(.+)rn$/) {
 					# relative scale, normalized by number of matching ideograms
-					$scale = $1 / @ids_matching;
+					$scale                      = $1 / @ids_matching;
 					$ideogram->{scale_relative} = $scale;
 				} else {
 					$scale = $chr_scale;
